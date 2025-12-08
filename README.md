@@ -10,6 +10,9 @@ Meeting recording and transcription using local Whisper. Records system audio + 
 - 📊 **Menu Bar Indicator** - Shows recording status with duration
 - 🗂️ **Organized Output** - Transcripts land in `~/transcripts/` with timestamps
 
+<img width="448" height="252" alt="image" src="https://github.com/user-attachments/assets/cb884962-f4b3-49f9-9c08-f2964b8c711c" />
+
+
 ## Requirements
 
 - macOS 13+ (Ventura or later)
