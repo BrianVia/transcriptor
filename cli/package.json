@@ -1,0 +1,17 @@
+{
+  "name": "transcriptor",
+  "version": "1.0.0",
+  "description": "Meeting recording and transcription CLI",
+  "type": "module",
+  "bin": {
+    "transcriptor": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --compile --outfile transcriptor"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

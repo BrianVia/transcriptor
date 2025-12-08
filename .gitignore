@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+.bun/
+
+# Build outputs
+.build/
+build/
+*.o
+*.a
+*.dylib
+
+# Swift Package Manager
+.swiftpm/
+Package.resolved
+
+# Environment and secrets
+.env
+.env.*
+*.key
+*.pem
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# IDE
+.idea/
+.vscode/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Runtime data
+*.pid
+*.seed
+
+# Temporary files
+*.tmp
+*.temp
+chunks.txt
+
+# Local config (user-specific)
+# Note: ~/.transcriptor/ contains user config and is outside this repo
+
+# Raycast extension build
+raycast-extension/node_modules/
+raycast-extension/.raycast/
+
+# Bun lockfile (optional - uncomment if you want to track it)
+# bun.lockb
