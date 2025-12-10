@@ -8,7 +8,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "transcriptor-indicator",
-            path: "Sources"
+            path: "Sources",
+            linkerSettings: [
+                .linkedFramework("EventKit")
+            ]
         )
     ]
 )

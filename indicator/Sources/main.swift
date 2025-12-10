@@ -1,4 +1,5 @@
 import AppKit
+import EventKit
 import Foundation
 
 // MARK: - State Management
@@ -54,7 +55,11 @@ class StateManager {
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     var timer: Timer?
+    var calendarTimer: Timer?
     var isBlinking = false
+
+    // Cache for upcoming meeting display
+    var cachedNextMeeting: UpcomingMeeting?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Create status item
@@ -69,7 +74,126 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Setup signal handling
         setupSignalHandling()
+
+        // Setup calendar integration
+        setupCalendarIntegration()
     }
+
+    // MARK: - Calendar Integration
+
+    func setupCalendarIntegration() {
+        let config = ConfigManager.shared.loadConfig()
+
+        guard config.calendarEnabled else {
+            return
+        }
+
+        // Request calendar access
+        CalendarManager.shared.requestAccess { [weak self] granted in
+            if granted {
+                self?.startCalendarPolling()
+            } else {
+                self?.showCalendarAccessDeniedAlert()
+            }
+        }
+    }
+
+    func startCalendarPolling() {
+        // Poll every 30 seconds for upcoming meetings
+        calendarTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+            self?.checkForUpcomingMeetings()
+        }
+
+        // Also check immediately
+        checkForUpcomingMeetings()
+    }
+
+    func checkForUpcomingMeetings() {
+        let config = ConfigManager.shared.loadConfig()
+        guard config.calendarEnabled else { return }
+
+        // Don't check if already recording
+        let state = StateManager.shared.loadState()
+        if state.isRecording {
+            cachedNextMeeting = nil
+            return
+        }
+
+        // Get meetings starting within configured window + 1 minute buffer
+        let meetings = CalendarManager.shared.getUpcomingMeetings(
+            within: config.reminderMinutesBefore + 1,
+            config: config
+        )
+
+        // Find the next meeting
+        let sortedMeetings = meetings.sorted { $0.startDate < $1.startDate }
+
+        // Cache for menu display
+        cachedNextMeeting = sortedMeetings.first
+
+        guard let nextMeeting = sortedMeetings.first else {
+            return
+        }
+
+        // Check if meeting is within the start window (-60s to +60s of start time)
+        let now = Date()
+        let timeUntilStart = nextMeeting.startDate.timeIntervalSince(now)
+
+        if timeUntilStart <= 60 && timeUntilStart >= -60 {
+            handleMeetingStart(nextMeeting, config: config)
+        }
+    }
+
+    func handleMeetingStart(_ meeting: UpcomingMeeting, config: CalendarConfig) {
+        // Mark as handled immediately to prevent duplicate triggers
+        CalendarManager.shared.markEventAsHandled(meeting.eventId)
+
+        if config.autoStartRecording {
+            // Auto-start recording without dialog
+            startRecording(name: meeting.title)
+        } else {
+            // Show confirmation dialog
+            showMeetingStartDialog(meeting)
+        }
+    }
+
+    func showMeetingStartDialog(_ meeting: UpcomingMeeting) {
+        NSApp.activate(ignoringOtherApps: true)
+
+        let alert = NSAlert()
+        alert.messageText = "Meeting Starting"
+        alert.informativeText = "Start recording \"\(meeting.title)\"?"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Start Recording")
+        alert.addButton(withTitle: "Skip")
+
+        let response = alert.runModal()
+
+        if response == .alertFirstButtonReturn {
+            startRecording(name: meeting.title)
+        }
+    }
+
+    func showCalendarAccessDeniedAlert() {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "Calendar Access Required"
+            alert.informativeText = "Transcriptor needs calendar access to auto-record meetings. Enable it in System Settings > Privacy & Security > Calendars."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Open Settings")
+            alert.addButton(withTitle: "Dismiss")
+
+            NSApp.activate(ignoringOtherApps: true)
+
+            if alert.runModal() == .alertFirstButtonReturn {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
+    }
+
+    // MARK: - UI Updates
 
     func updateStatusItem() {
         guard let button = statusItem?.button else { return }
@@ -116,11 +240,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Transcriptor", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
 
+        // Show upcoming meeting if any
+        let config = ConfigManager.shared.loadConfig()
+        if config.calendarEnabled, let nextMeeting = cachedNextMeeting {
+            let formatter = DateFormatter()
+            formatter.timeStyle = .short
+
+            let timeStr = formatter.string(from: nextMeeting.startDate)
+            let upcomingItem = NSMenuItem(
+                title: "Next: \(nextMeeting.title) at \(timeStr)",
+                action: nil,
+                keyEquivalent: ""
+            )
+            upcomingItem.isEnabled = false
+            menu.addItem(upcomingItem)
+            menu.addItem(NSMenuItem.separator())
+        }
+
         let startItem = NSMenuItem(title: "Start Recording...", action: #selector(showStartDialog), keyEquivalent: "r")
         startItem.target = self
         menu.addItem(startItem)
 
         menu.addItem(NSMenuItem.separator())
+
+        // Calendar toggle if enabled
+        if config.calendarEnabled {
+            let autoLabel = config.autoStartRecording ? "Auto-Record: On" : "Auto-Record: Off"
+            let autoItem = NSMenuItem(title: autoLabel, action: #selector(toggleAutoRecording), keyEquivalent: "")
+            autoItem.target = self
+            menu.addItem(autoItem)
+            menu.addItem(NSMenuItem.separator())
+        }
 
         let listItem = NSMenuItem(title: "View Transcripts", action: #selector(openTranscripts), keyEquivalent: "")
         listItem.target = self
@@ -159,6 +309,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.menu = menu
     }
 
+    // MARK: - Actions
+
     @objc func showStartDialog() {
         let alert = NSAlert()
         alert.messageText = "Start Recording"
@@ -193,7 +345,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Run transcriptor start in background
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/bash")
-        task.arguments = ["-c", "transcriptor start \"\(name)\" &"]
+
+        // Use login shell to get user's PATH, or fall back to common locations
+        let transcriptorPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".bun/bin/transcriptor").path
+        task.arguments = ["-c", "\"\(transcriptorPath)\" start \"\(name)\" &"]
 
         do {
             try task.run()
@@ -209,6 +365,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .appendingPathComponent("stop-signal")
 
         try? "stop".write(to: stopFile, atomically: true, encoding: .utf8)
+    }
+
+    @objc func toggleAutoRecording() {
+        var config = ConfigManager.shared.loadConfig()
+        config.autoStartRecording = !config.autoStartRecording
+        ConfigManager.shared.saveConfig(config)
+        updateStatusItem() // Refresh menu
     }
 
     @objc func openTranscripts() {

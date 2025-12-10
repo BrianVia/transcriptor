@@ -8,6 +8,13 @@ export interface Config {
   deleteAudioAfterTranscript: boolean;
   whisperModel: string;
   chunkDurationSeconds: number;
+  // Calendar integration
+  calendarEnabled: boolean;
+  autoStartRecording: boolean;
+  reminderMinutesBefore: number;
+  onlyVideoMeetings: boolean;
+  excludedCalendars: string[];
+  excludedTitlePatterns: string[];
 }
 
 export interface RecordingState {
@@ -44,6 +51,13 @@ const defaultConfig: Config = {
   deleteAudioAfterTranscript: false,
   whisperModel: "large-v3-turbo",
   chunkDurationSeconds: 30,
+  // Calendar integration
+  calendarEnabled: true,
+  autoStartRecording: true,
+  reminderMinutesBefore: 1,
+  onlyVideoMeetings: false,
+  excludedCalendars: [],
+  excludedTitlePatterns: ["Focus", "Lunch", "Break", "OOO", "Out of Office", "Busy"],
 };
 
 const defaultState: RecordingState = {
