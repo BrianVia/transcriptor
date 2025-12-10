@@ -110,7 +110,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func checkForUpcomingMeetings() {
         let config = ConfigManager.shared.loadConfig()
-        guard config.calendarEnabled else { return }
+        guard config.calendarEnabled else {
+            cachedNextMeeting = nil
+            return
+        }
 
         // Don't check if already recording
         let state = StateManager.shared.loadState()
@@ -125,28 +128,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             config: config
         )
 
-        // Find the next meeting
+        let now = Date()
+
+        // Find meetings sorted by start time
         let sortedMeetings = meetings.sorted { $0.startDate < $1.startDate }
 
-        // Cache for menu display
-        cachedNextMeeting = sortedMeetings.first
+        // For menu display: only show meetings that haven't started yet
+        cachedNextMeeting = sortedMeetings.first { $0.startDate > now }
 
-        guard let nextMeeting = sortedMeetings.first else {
-            return
-        }
-
-        // Check if meeting is within the start window (-60s to +60s of start time)
-        let now = Date()
-        let timeUntilStart = nextMeeting.startDate.timeIntervalSince(now)
-
-        if timeUntilStart <= 60 && timeUntilStart >= -60 {
-            handleMeetingStart(nextMeeting, config: config)
+        // For auto-start: check if any meeting is within the start window (-60s to +60s)
+        for meeting in sortedMeetings {
+            let timeUntilStart = meeting.startDate.timeIntervalSince(now)
+            if timeUntilStart <= 60 && timeUntilStart >= -60 {
+                handleMeetingStart(meeting, config: config)
+                break  // Only handle one meeting at a time
+            }
         }
     }
 
     func handleMeetingStart(_ meeting: UpcomingMeeting, config: CalendarConfig) {
         // Mark as handled immediately to prevent duplicate triggers
         CalendarManager.shared.markEventAsHandled(meeting.eventId)
+
+        // Clear the cached meeting immediately so menu updates
+        cachedNextMeeting = nil
 
         if config.autoStartRecording {
             // Auto-start recording without dialog
@@ -155,6 +160,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Show confirmation dialog
             showMeetingStartDialog(meeting)
         }
+
+        // Refresh cache to show next meeting (after a brief delay for state to settle)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.refreshUpcomingMeetingCache()
+        }
+    }
+
+    func refreshUpcomingMeetingCache() {
+        let config = ConfigManager.shared.loadConfig()
+        guard config.calendarEnabled else {
+            cachedNextMeeting = nil
+            return
+        }
+
+        let state = StateManager.shared.loadState()
+        if state.isRecording {
+            cachedNextMeeting = nil
+            return
+        }
+
+        // Get meetings within a longer window for display
+        let meetings = CalendarManager.shared.getUpcomingMeetings(
+            within: 60,  // Look ahead 1 hour for "Next" display
+            config: config
+        )
+
+        let now = Date()
+        let futureMeetings = meetings.filter { $0.startDate > now }
+        cachedNextMeeting = futureMeetings.sorted { $0.startDate < $1.startDate }.first
     }
 
     func showMeetingStartDialog(_ meeting: UpcomingMeeting) {
@@ -243,12 +277,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Show upcoming meeting if any
         let config = ConfigManager.shared.loadConfig()
         if config.calendarEnabled, let nextMeeting = cachedNextMeeting {
-            let formatter = DateFormatter()
-            formatter.timeStyle = .short
-
-            let timeStr = formatter.string(from: nextMeeting.startDate)
+            let timeStr = formatRelativeTime(nextMeeting.startDate)
             let upcomingItem = NSMenuItem(
-                title: "Next: \(nextMeeting.title) at \(timeStr)",
+                title: "Next: \(nextMeeting.title) (\(timeStr))",
                 action: nil,
                 keyEquivalent: ""
             )
@@ -339,6 +370,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let formatter = DateFormatter()
         formatter.dateFormat = "h:mm a"
         return formatter.string(from: date)
+    }
+
+    func formatRelativeTime(_ date: Date) -> String {
+        let now = Date()
+        let seconds = Int(date.timeIntervalSince(now))
+
+        if seconds < 0 {
+            return "started"
+        } else if seconds < 60 {
+            return "in <1 min"
+        } else if seconds < 3600 {
+            let minutes = seconds / 60
+            return "in \(minutes) min"
+        } else {
+            let formatter = DateFormatter()
+            formatter.timeStyle = .short
+            return "at \(formatter.string(from: date))"
+        }
     }
 
     @objc func startRecording(name: String) {
