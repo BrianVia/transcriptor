@@ -21,7 +21,7 @@ struct CalendarConfig: Codable {
         reminderMinutesBefore: 1,
         onlyVideoMeetings: false,
         excludedCalendars: [],
-        excludedTitlePatterns: ["Focus", "Lunch", "Break", "OOO", "Out of Office", "Busy"]
+        excludedTitlePatterns: ["Focus", "Deep Work", "Do Not Disturb", "Blocked", "Busy", "Lunch", "Break", "OOO", "Out of Office", "Personal", "Hold"]
     )
 
     init(
@@ -30,7 +30,7 @@ struct CalendarConfig: Codable {
         reminderMinutesBefore: Int = 1,
         onlyVideoMeetings: Bool = false,
         excludedCalendars: [String] = [],
-        excludedTitlePatterns: [String] = ["Focus", "Lunch", "Break", "OOO", "Out of Office", "Busy"]
+        excludedTitlePatterns: [String] = ["Focus", "Deep Work", "Do Not Disturb", "Blocked", "Busy", "Lunch", "Break", "OOO", "Out of Office", "Personal", "Hold"]
     ) {
         self.calendarEnabled = calendarEnabled
         self.autoStartRecording = autoStartRecording

@@ -57,7 +57,7 @@ const defaultConfig: Config = {
   reminderMinutesBefore: 1,
   onlyVideoMeetings: false,
   excludedCalendars: [],
-  excludedTitlePatterns: ["Focus", "Lunch", "Break", "OOO", "Out of Office", "Busy"],
+  excludedTitlePatterns: ["Focus", "Deep Work", "Do Not Disturb", "Blocked", "Busy", "Lunch", "Break", "OOO", "Out of Office", "Personal", "Hold"],
 };
 
 const defaultState: RecordingState = {
