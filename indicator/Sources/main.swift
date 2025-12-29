@@ -398,7 +398,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Use login shell to get user's PATH, or fall back to common locations
         let transcriptorPath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".bun/bin/transcriptor").path
-        task.arguments = ["-c", "\"\(transcriptorPath)\" start \"\(name)\" &"]
+        task.arguments = ["-l", "-c", "\"\(transcriptorPath)\" start \"\(name)\" &"]
 
         do {
             try task.run()
