@@ -8,6 +8,12 @@ struct CalendarConfig: Codable {
     var excludedCalendars: [String]
     var excludedTitlePatterns: [String]
 
+    // Microphone detection settings
+    var microphoneDetectionEnabled: Bool
+    var microphoneAutoStart: Bool
+    var microphoneAutoStop: Bool
+    var microphoneIdleDelaySeconds: Int  // How long to wait after mic goes idle before auto-stopping
+
     // Existing config fields (optional for decoding flexibility)
     var audioRetentionDays: Int?
     var transcriptRetentionDays: Int?
@@ -21,7 +27,11 @@ struct CalendarConfig: Codable {
         reminderMinutesBefore: 1,
         onlyVideoMeetings: false,
         excludedCalendars: [],
-        excludedTitlePatterns: ["Focus", "Deep Work", "Do Not Disturb", "Blocked", "Busy", "Lunch", "Break", "OOO", "Out of Office", "Personal", "Hold"]
+        excludedTitlePatterns: ["Focus", "Deep Work", "Do Not Disturb", "Blocked", "Busy", "Lunch", "Break", "OOO", "Out of Office", "Personal", "Hold"],
+        microphoneDetectionEnabled: true,
+        microphoneAutoStart: true,
+        microphoneAutoStop: false,
+        microphoneIdleDelaySeconds: 30
     )
 
     init(
@@ -30,7 +40,11 @@ struct CalendarConfig: Codable {
         reminderMinutesBefore: Int = 1,
         onlyVideoMeetings: Bool = false,
         excludedCalendars: [String] = [],
-        excludedTitlePatterns: [String] = ["Focus", "Deep Work", "Do Not Disturb", "Blocked", "Busy", "Lunch", "Break", "OOO", "Out of Office", "Personal", "Hold"]
+        excludedTitlePatterns: [String] = ["Focus", "Deep Work", "Do Not Disturb", "Blocked", "Busy", "Lunch", "Break", "OOO", "Out of Office", "Personal", "Hold"],
+        microphoneDetectionEnabled: Bool = true,
+        microphoneAutoStart: Bool = true,
+        microphoneAutoStop: Bool = false,
+        microphoneIdleDelaySeconds: Int = 30
     ) {
         self.calendarEnabled = calendarEnabled
         self.autoStartRecording = autoStartRecording
@@ -38,6 +52,10 @@ struct CalendarConfig: Codable {
         self.onlyVideoMeetings = onlyVideoMeetings
         self.excludedCalendars = excludedCalendars
         self.excludedTitlePatterns = excludedTitlePatterns
+        self.microphoneDetectionEnabled = microphoneDetectionEnabled
+        self.microphoneAutoStart = microphoneAutoStart
+        self.microphoneAutoStop = microphoneAutoStop
+        self.microphoneIdleDelaySeconds = microphoneIdleDelaySeconds
     }
 
     // Custom decoding to handle missing fields
@@ -50,6 +68,12 @@ struct CalendarConfig: Codable {
         self.onlyVideoMeetings = try container.decodeIfPresent(Bool.self, forKey: .onlyVideoMeetings) ?? Self.defaults.onlyVideoMeetings
         self.excludedCalendars = try container.decodeIfPresent([String].self, forKey: .excludedCalendars) ?? Self.defaults.excludedCalendars
         self.excludedTitlePatterns = try container.decodeIfPresent([String].self, forKey: .excludedTitlePatterns) ?? Self.defaults.excludedTitlePatterns
+
+        // Microphone detection settings
+        self.microphoneDetectionEnabled = try container.decodeIfPresent(Bool.self, forKey: .microphoneDetectionEnabled) ?? Self.defaults.microphoneDetectionEnabled
+        self.microphoneAutoStart = try container.decodeIfPresent(Bool.self, forKey: .microphoneAutoStart) ?? Self.defaults.microphoneAutoStart
+        self.microphoneAutoStop = try container.decodeIfPresent(Bool.self, forKey: .microphoneAutoStop) ?? Self.defaults.microphoneAutoStop
+        self.microphoneIdleDelaySeconds = try container.decodeIfPresent(Int.self, forKey: .microphoneIdleDelaySeconds) ?? Self.defaults.microphoneIdleDelaySeconds
 
         // Existing fields
         self.audioRetentionDays = try container.decodeIfPresent(Int.self, forKey: .audioRetentionDays)
@@ -115,6 +139,12 @@ class ConfigManager {
         existingData["onlyVideoMeetings"] = config.onlyVideoMeetings
         existingData["excludedCalendars"] = config.excludedCalendars
         existingData["excludedTitlePatterns"] = config.excludedTitlePatterns
+
+        // Update microphone detection settings
+        existingData["microphoneDetectionEnabled"] = config.microphoneDetectionEnabled
+        existingData["microphoneAutoStart"] = config.microphoneAutoStart
+        existingData["microphoneAutoStop"] = config.microphoneAutoStop
+        existingData["microphoneIdleDelaySeconds"] = config.microphoneIdleDelaySeconds
 
         if let data = try? JSONSerialization.data(withJSONObject: existingData, options: .prettyPrinted) {
             try? data.write(to: configFile)
