@@ -10,7 +10,9 @@ let package = Package(
             name: "transcriptor-indicator",
             path: "Sources",
             linkerSettings: [
-                .linkedFramework("EventKit")
+                .linkedFramework("EventKit"),
+                .linkedFramework("CoreAudio"),
+                .linkedFramework("AudioToolbox")
             ]
         )
     ]

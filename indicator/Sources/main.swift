@@ -61,6 +61,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Cache for upcoming meeting display
     var cachedNextMeeting: UpcomingMeeting?
 
+    // Track if we started recording via mic detection (for auto-stop)
+    var micTriggeredRecording = false
+    var micAutoStopTimer: Timer?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Create status item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -77,6 +81,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Setup calendar integration
         setupCalendarIntegration()
+
+        // Setup microphone monitoring
+        setupMicrophoneMonitoring()
     }
 
     // MARK: - Calendar Integration
@@ -153,6 +160,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Clear the cached meeting immediately so menu updates
         cachedNextMeeting = nil
 
+        // Calendar-triggered - don't auto-stop based on mic
+        micTriggeredRecording = false
+
         if config.autoStartRecording {
             // Auto-start recording without dialog
             startRecording(name: meeting.title)
@@ -227,6 +237,113 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Microphone Monitoring
+
+    func setupMicrophoneMonitoring() {
+        let config = ConfigManager.shared.loadConfig()
+
+        guard config.microphoneDetectionEnabled else {
+            return
+        }
+
+        // Set up callback for microphone activity changes
+        MicrophoneMonitor.shared.onMicrophoneActivityChanged = { [weak self] isActive in
+            self?.handleMicrophoneActivityChange(isActive: isActive)
+        }
+
+        // Start monitoring
+        MicrophoneMonitor.shared.startMonitoring()
+    }
+
+    func handleMicrophoneActivityChange(isActive: Bool) {
+        let config = ConfigManager.shared.loadConfig()
+        let state = StateManager.shared.loadState()
+
+        if isActive {
+            // Microphone became active
+            micAutoStopTimer?.invalidate()
+            micAutoStopTimer = nil
+
+            // Only auto-start if enabled, not already recording, and auto-start is on
+            if config.microphoneAutoStart && !state.isRecording {
+                handleMicrophoneActivated(config: config)
+            }
+        } else {
+            // Microphone became idle
+            if config.microphoneAutoStop && state.isRecording && micTriggeredRecording {
+                // Start countdown to auto-stop
+                let delay = TimeInterval(config.microphoneIdleDelaySeconds)
+                micAutoStopTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+                    self?.handleMicrophoneAutoStop()
+                }
+            }
+        }
+    }
+
+    func handleMicrophoneActivated(config: CalendarConfig) {
+        // Check if there's an upcoming calendar meeting to use as the name
+        var meetingName: String? = nil
+
+        if config.calendarEnabled, let nextMeeting = cachedNextMeeting {
+            // If meeting is starting soon (within 5 minutes), use its name
+            let timeUntilStart = nextMeeting.startDate.timeIntervalSince(Date())
+            if timeUntilStart <= 300 && timeUntilStart >= -300 {
+                meetingName = nextMeeting.title
+                CalendarManager.shared.markEventAsHandled(nextMeeting.eventId)
+                cachedNextMeeting = nil
+            }
+        }
+
+        // Default name if no calendar match
+        let name = meetingName ?? "Call \(formatDate(Date()))"
+
+        // Mark as mic-triggered for auto-stop tracking
+        micTriggeredRecording = true
+
+        // Show brief notification and start recording
+        showMicrophoneDetectedNotification(meetingName: name)
+        startRecording(name: name)
+
+        // Refresh the meeting cache
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.refreshUpcomingMeetingCache()
+        }
+    }
+
+    func handleMicrophoneAutoStop() {
+        let state = StateManager.shared.loadState()
+        guard state.isRecording && micTriggeredRecording else { return }
+
+        // Verify mic is still idle
+        if !MicrophoneMonitor.shared.isMicrophoneInUse {
+            micTriggeredRecording = false
+            stopRecording()
+        }
+    }
+
+    func showMicrophoneDetectedNotification(meetingName: String) {
+        // Post a user notification
+        let notification = NSUserNotification()
+        notification.title = "Recording Started"
+        notification.informativeText = "Microphone detected. Recording: \(meetingName)"
+        notification.soundName = nil
+        NSUserNotificationCenter.default.deliver(notification)
+    }
+
+    @objc func toggleMicrophoneDetection() {
+        var config = ConfigManager.shared.loadConfig()
+        config.microphoneDetectionEnabled = !config.microphoneDetectionEnabled
+        ConfigManager.shared.saveConfig(config)
+
+        if config.microphoneDetectionEnabled {
+            MicrophoneMonitor.shared.startMonitoring()
+        } else {
+            MicrophoneMonitor.shared.stopMonitoring()
+        }
+
+        updateStatusItem()
+    }
+
     // MARK: - UI Updates
 
     func updateStatusItem() {
@@ -274,8 +391,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Transcriptor", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
 
-        // Show upcoming meeting if any
+        // Show microphone status if monitoring is enabled
         let config = ConfigManager.shared.loadConfig()
+        if config.microphoneDetectionEnabled {
+            let micStatus = MicrophoneMonitor.shared.isMicrophoneInUse ? "🎤 Mic Active" : "🎤 Listening..."
+            let micStatusItem = NSMenuItem(title: micStatus, action: nil, keyEquivalent: "")
+            micStatusItem.isEnabled = false
+            menu.addItem(micStatusItem)
+            menu.addItem(NSMenuItem.separator())
+        }
+
+        // Show upcoming meeting if any
         if config.calendarEnabled, let nextMeeting = cachedNextMeeting {
             let timeStr = formatRelativeTime(nextMeeting.startDate)
             let upcomingItem = NSMenuItem(
@@ -294,14 +420,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Microphone detection toggle
+        let micLabel = config.microphoneDetectionEnabled ? "Mic Detection: On" : "Mic Detection: Off"
+        let micItem = NSMenuItem(title: micLabel, action: #selector(toggleMicrophoneDetection), keyEquivalent: "")
+        micItem.target = self
+        menu.addItem(micItem)
+
         // Calendar toggle if enabled
         if config.calendarEnabled {
-            let autoLabel = config.autoStartRecording ? "Auto-Record: On" : "Auto-Record: Off"
+            let autoLabel = config.autoStartRecording ? "Calendar Auto-Record: On" : "Calendar Auto-Record: Off"
             let autoItem = NSMenuItem(title: autoLabel, action: #selector(toggleAutoRecording), keyEquivalent: "")
             autoItem.target = self
             menu.addItem(autoItem)
-            menu.addItem(NSMenuItem.separator())
         }
+
+        menu.addItem(NSMenuItem.separator())
 
         let listItem = NSMenuItem(title: "View Transcripts", action: #selector(openTranscripts), keyEquivalent: "")
         listItem.target = self
@@ -362,6 +495,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if response == .alertFirstButtonReturn {
             let meetingName = inputField.stringValue.isEmpty ? "Untitled" : inputField.stringValue
+            micTriggeredRecording = false  // Manual start - don't auto-stop based on mic
             startRecording(name: meetingName)
         }
     }
