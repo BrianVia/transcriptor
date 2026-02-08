@@ -13,8 +13,10 @@ export interface Config {
   autoStartRecording: boolean;
   reminderMinutesBefore: number;
   onlyVideoMeetings: boolean;
+  requireGoogleMeetLinkForCalendarAutoStart: boolean;
   excludedCalendars: string[];
   excludedTitlePatterns: string[];
+  maxAutoRecordingMinutes: number;
 }
 
 export interface RecordingState {
@@ -56,8 +58,10 @@ const defaultConfig: Config = {
   autoStartRecording: true,
   reminderMinutesBefore: 1,
   onlyVideoMeetings: false,
+  requireGoogleMeetLinkForCalendarAutoStart: true,
   excludedCalendars: [],
   excludedTitlePatterns: ["Focus", "Deep Work", "Do Not Disturb", "Blocked", "Busy", "Lunch", "Break", "OOO", "Out of Office", "Personal", "Hold"],
+  maxAutoRecordingMinutes: 120,
 };
 
 const defaultState: RecordingState = {

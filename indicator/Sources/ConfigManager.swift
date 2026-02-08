@@ -5,6 +5,7 @@ struct CalendarConfig: Codable {
     var autoStartRecording: Bool
     var reminderMinutesBefore: Int
     var onlyVideoMeetings: Bool
+    var requireGoogleMeetLinkForCalendarAutoStart: Bool
     var excludedCalendars: [String]
     var excludedTitlePatterns: [String]
 
@@ -13,6 +14,7 @@ struct CalendarConfig: Codable {
     var microphoneAutoStart: Bool
     var microphoneAutoStop: Bool
     var microphoneIdleDelaySeconds: Int  // How long to wait after mic goes idle before auto-stopping
+    var maxAutoRecordingMinutes: Int  // Hard cap for unattended auto-start sessions
 
     // Existing config fields (optional for decoding flexibility)
     var audioRetentionDays: Int?
@@ -26,12 +28,14 @@ struct CalendarConfig: Codable {
         autoStartRecording: true,
         reminderMinutesBefore: 1,
         onlyVideoMeetings: false,
+        requireGoogleMeetLinkForCalendarAutoStart: true,
         excludedCalendars: [],
         excludedTitlePatterns: ["Focus", "Deep Work", "Do Not Disturb", "Blocked", "Busy", "Lunch", "Break", "OOO", "Out of Office", "Personal", "Hold"],
         microphoneDetectionEnabled: true,
         microphoneAutoStart: true,
         microphoneAutoStop: false,
-        microphoneIdleDelaySeconds: 30
+        microphoneIdleDelaySeconds: 30,
+        maxAutoRecordingMinutes: 120
     )
 
     init(
@@ -39,23 +43,27 @@ struct CalendarConfig: Codable {
         autoStartRecording: Bool = true,
         reminderMinutesBefore: Int = 1,
         onlyVideoMeetings: Bool = false,
+        requireGoogleMeetLinkForCalendarAutoStart: Bool = true,
         excludedCalendars: [String] = [],
         excludedTitlePatterns: [String] = ["Focus", "Deep Work", "Do Not Disturb", "Blocked", "Busy", "Lunch", "Break", "OOO", "Out of Office", "Personal", "Hold"],
         microphoneDetectionEnabled: Bool = true,
         microphoneAutoStart: Bool = true,
         microphoneAutoStop: Bool = false,
-        microphoneIdleDelaySeconds: Int = 30
+        microphoneIdleDelaySeconds: Int = 30,
+        maxAutoRecordingMinutes: Int = 120
     ) {
         self.calendarEnabled = calendarEnabled
         self.autoStartRecording = autoStartRecording
         self.reminderMinutesBefore = reminderMinutesBefore
         self.onlyVideoMeetings = onlyVideoMeetings
+        self.requireGoogleMeetLinkForCalendarAutoStart = requireGoogleMeetLinkForCalendarAutoStart
         self.excludedCalendars = excludedCalendars
         self.excludedTitlePatterns = excludedTitlePatterns
         self.microphoneDetectionEnabled = microphoneDetectionEnabled
         self.microphoneAutoStart = microphoneAutoStart
         self.microphoneAutoStop = microphoneAutoStop
         self.microphoneIdleDelaySeconds = microphoneIdleDelaySeconds
+        self.maxAutoRecordingMinutes = maxAutoRecordingMinutes
     }
 
     // Custom decoding to handle missing fields
@@ -66,6 +74,7 @@ struct CalendarConfig: Codable {
         self.autoStartRecording = try container.decodeIfPresent(Bool.self, forKey: .autoStartRecording) ?? Self.defaults.autoStartRecording
         self.reminderMinutesBefore = try container.decodeIfPresent(Int.self, forKey: .reminderMinutesBefore) ?? Self.defaults.reminderMinutesBefore
         self.onlyVideoMeetings = try container.decodeIfPresent(Bool.self, forKey: .onlyVideoMeetings) ?? Self.defaults.onlyVideoMeetings
+        self.requireGoogleMeetLinkForCalendarAutoStart = try container.decodeIfPresent(Bool.self, forKey: .requireGoogleMeetLinkForCalendarAutoStart) ?? Self.defaults.requireGoogleMeetLinkForCalendarAutoStart
         self.excludedCalendars = try container.decodeIfPresent([String].self, forKey: .excludedCalendars) ?? Self.defaults.excludedCalendars
         self.excludedTitlePatterns = try container.decodeIfPresent([String].self, forKey: .excludedTitlePatterns) ?? Self.defaults.excludedTitlePatterns
 
@@ -74,6 +83,7 @@ struct CalendarConfig: Codable {
         self.microphoneAutoStart = try container.decodeIfPresent(Bool.self, forKey: .microphoneAutoStart) ?? Self.defaults.microphoneAutoStart
         self.microphoneAutoStop = try container.decodeIfPresent(Bool.self, forKey: .microphoneAutoStop) ?? Self.defaults.microphoneAutoStop
         self.microphoneIdleDelaySeconds = try container.decodeIfPresent(Int.self, forKey: .microphoneIdleDelaySeconds) ?? Self.defaults.microphoneIdleDelaySeconds
+        self.maxAutoRecordingMinutes = try container.decodeIfPresent(Int.self, forKey: .maxAutoRecordingMinutes) ?? Self.defaults.maxAutoRecordingMinutes
 
         // Existing fields
         self.audioRetentionDays = try container.decodeIfPresent(Int.self, forKey: .audioRetentionDays)
@@ -137,6 +147,7 @@ class ConfigManager {
         existingData["autoStartRecording"] = config.autoStartRecording
         existingData["reminderMinutesBefore"] = config.reminderMinutesBefore
         existingData["onlyVideoMeetings"] = config.onlyVideoMeetings
+        existingData["requireGoogleMeetLinkForCalendarAutoStart"] = config.requireGoogleMeetLinkForCalendarAutoStart
         existingData["excludedCalendars"] = config.excludedCalendars
         existingData["excludedTitlePatterns"] = config.excludedTitlePatterns
 
@@ -145,6 +156,7 @@ class ConfigManager {
         existingData["microphoneAutoStart"] = config.microphoneAutoStart
         existingData["microphoneAutoStop"] = config.microphoneAutoStop
         existingData["microphoneIdleDelaySeconds"] = config.microphoneIdleDelaySeconds
+        existingData["maxAutoRecordingMinutes"] = config.maxAutoRecordingMinutes
 
         if let data = try? JSONSerialization.data(withJSONObject: existingData, options: .prettyPrinted) {
             try? data.write(to: configFile)

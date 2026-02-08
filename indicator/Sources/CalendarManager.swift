@@ -7,6 +7,7 @@ struct UpcomingMeeting {
     let startDate: Date
     let endDate: Date
     let isVideoMeeting: Bool
+    let hasGoogleMeetLink: Bool
     let calendarTitle: String
 }
 
@@ -62,6 +63,7 @@ class CalendarManager {
                 startDate: event.startDate,
                 endDate: event.endDate,
                 isVideoMeeting: hasVideoConferenceLink(event),
+                hasGoogleMeetLink: hasGoogleMeetLink(event),
                 calendarTitle: event.calendar.title
             )
         }
@@ -128,28 +130,55 @@ class CalendarManager {
             "loom.com"
         ]
 
-        // Check URL field
-        if let url = event.url?.absoluteString.lowercased() {
-            if videoPatterns.contains(where: { url.contains($0) }) {
+        return hasConferenceLink(event, matchingAnyDomain: videoPatterns)
+    }
+
+    private func hasGoogleMeetLink(_ event: EKEvent) -> Bool {
+        hasConferenceLink(event, matchingAnyDomain: ["meet.google.com"])
+    }
+
+    private func hasConferenceLink(_ event: EKEvent, matchingAnyDomain domains: [String]) -> Bool {
+        let links = extractConferenceLinks(from: event)
+        let normalizedDomains = domains.map { $0.lowercased() }
+
+        for link in links {
+            guard let url = URL(string: link), let host = url.host?.lowercased() else {
+                continue
+            }
+
+            if normalizedDomains.contains(where: { host == $0 || host.hasSuffix(".\($0)") }) {
                 return true
             }
         }
-
-        // Check notes/description
-        if let notes = event.notes?.lowercased() {
-            if videoPatterns.contains(where: { notes.contains($0) }) {
-                return true
-            }
-        }
-
-        // Check location (Zoom often puts link in location)
-        if let location = event.location?.lowercased() {
-            if videoPatterns.contains(where: { location.contains($0) }) {
-                return true
-            }
-        }
-
         return false
+    }
+
+    private func extractConferenceLinks(from event: EKEvent) -> [String] {
+        var links: [String] = []
+
+        if let url = event.url?.absoluteString {
+            links.append(url)
+        }
+
+        if let notes = event.notes {
+            links.append(contentsOf: extractLinks(from: notes))
+        }
+
+        if let location = event.location {
+            links.append(contentsOf: extractLinks(from: location))
+        }
+
+        return links
+    }
+
+    private func extractLinks(from text: String) -> [String] {
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
+            return []
+        }
+
+        let nsText = text as NSString
+        let matches = detector.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+        return matches.compactMap { $0.url?.absoluteString }
     }
 
     // MARK: - Event Tracking

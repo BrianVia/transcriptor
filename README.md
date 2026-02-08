@@ -38,6 +38,7 @@ The installer will:
 4. Clone and build whisper.cpp
 5. Download the `large-v3-turbo` Whisper model (~1.5GB)
 6. Install the CLI
+7. Configure the menu bar app to start at login
 
 ### Grant Permissions
 
@@ -76,21 +77,25 @@ transcriptor config
 transcriptor config set chunkDurationSeconds 45
 ```
 
-### Raycast Extension
+### Menu Bar App (Auto-Start)
 
-Install the Raycast extension for quick access:
+The installer configures `transcriptor-indicator` to start automatically at login using a user LaunchAgent:
+
+- `~/Library/LaunchAgents/com.transcriptor.indicator.plist`
+
+Useful commands:
 
 ```bash
-cd raycast-extension
-npm install
-npm run dev
-```
+# Check if running
+launchctl print "gui/$(id -u)/com.transcriptor.indicator"
 
-Commands:
-- **Start Recording** - Enter meeting name and start
-- **Stop Recording** - Stop current recording
-- **Recording Status** - Check if recording
-- **View Transcripts** - Browse and open transcripts
+# Stop auto-start + stop the running menu bar app
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.transcriptor.indicator.plist
+
+# Re-enable auto-start + start now
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.transcriptor.indicator.plist
+launchctl kickstart -k "gui/$(id -u)/com.transcriptor.indicator"
+```
 
 ## Output
 
@@ -139,6 +144,8 @@ Edit `~/.transcriptor/config.json` or use the CLI:
 | `deleteAudioAfterTranscript` | false | Delete audio after transcription |
 | `whisperModel` | large-v3-turbo | Whisper model to use |
 | `chunkDurationSeconds` | 30 | Recording chunk duration |
+| `requireGoogleMeetLinkForCalendarAutoStart` | true | Only auto-start calendar recordings when a real `meet.google.com` link is present |
+| `maxAutoRecordingMinutes` | 120 | Safety cap for auto-started recordings (set `0` to disable) |
 
 ### Available Models
 
@@ -165,8 +172,8 @@ mv models/ggml-small.bin ../models/
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Raycast Extension / CLI                                        │
-│  └── Start/Stop/Status/Browse                                   │
+│  Menu Bar App / CLI                                              │
+│  └── Start/Stop/Status/Browse                                    │
 └──────────────────────┬──────────────────────────────────────────┘
                        │
                        ▼

@@ -63,7 +63,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Track if we started recording via mic detection (for auto-stop)
     var micTriggeredRecording = false
+    var autoStartedRecording = false
     var micAutoStopTimer: Timer?
+
+    // Track last known recording state to avoid rebuilding menu unnecessarily
+    // Starts as nil so the first updateStatusItem() call always sets up the icon/menu
+    private var lastKnownRecordingState: Bool?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Create status item
@@ -147,6 +152,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         for meeting in sortedMeetings {
             let timeUntilStart = meeting.startDate.timeIntervalSince(now)
             if timeUntilStart <= 60 && timeUntilStart >= -60 {
+                if config.autoStartRecording &&
+                    config.requireGoogleMeetLinkForCalendarAutoStart &&
+                    !meeting.hasGoogleMeetLink {
+                    continue
+                }
                 handleMeetingStart(meeting, config: config)
                 break  // Only handle one meeting at a time
             }
@@ -164,9 +174,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         micTriggeredRecording = false
 
         if config.autoStartRecording {
+            autoStartedRecording = true
             // Auto-start recording without dialog
             startRecording(name: meeting.title)
         } else {
+            autoStartedRecording = false
             // Show confirmation dialog
             showMeetingStartDialog(meeting)
         }
@@ -214,6 +226,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let response = alert.runModal()
 
         if response == .alertFirstButtonReturn {
+            autoStartedRecording = false
             startRecording(name: meeting.title)
         }
     }
@@ -299,6 +312,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Mark as mic-triggered for auto-stop tracking
         micTriggeredRecording = true
+        autoStartedRecording = true
 
         // Show brief notification and start recording
         showMicrophoneDetectedNotification(meetingName: name)
@@ -317,6 +331,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Verify mic is still idle
         if !MicrophoneMonitor.shared.isMicrophoneInUse {
             micTriggeredRecording = false
+            autoStartedRecording = false
             stopRecording()
         }
     }
@@ -350,38 +365,56 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem?.button else { return }
 
         let state = StateManager.shared.loadState()
+        let stateChanged = state.isRecording != lastKnownRecordingState
 
         if state.isRecording {
+            enforceAutoRecordingTimeoutIfNeeded(state: state)
+
             // Recording state - blinking red dot with timer
             isBlinking.toggle()
 
             let meetingName = state.meetingName ?? "Recording"
             let elapsed = StateManager.shared.getElapsedTime() ?? "0:00"
 
-            // Use SF Symbol for waveform with red recording dot
-            if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Recording") {
-                let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-                button.image = image.withSymbolConfiguration(config)
-                button.image?.isTemplate = true
+            // Only update image on state change (expensive operation)
+            if stateChanged {
+                if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Recording") {
+                    let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+                    button.image = image.withSymbolConfiguration(config)
+                    button.image?.isTemplate = true
+                }
+                button.imagePosition = .imageLeft
             }
 
-            // Show recording indicator
+            // Update title every tick (cheap operation)
             let dot = isBlinking ? "●" : "○"
             button.title = " \(dot) \(elapsed)"
-            button.imagePosition = .imageLeft
 
-            setupRecordingMenu(meetingName: meetingName, elapsed: elapsed)
-        } else {
-            // Idle state - clean waveform icon
-            if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Transcriptor") {
-                let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
-                button.image = image.withSymbolConfiguration(config)
-                button.image?.isTemplate = true
+            // Only rebuild menu on state change
+            if stateChanged {
+                setupRecordingMenu(meetingName: meetingName, elapsed: elapsed)
+                lastKnownRecordingState = true
             }
-            button.title = ""
-            button.imagePosition = .imageOnly
+        } else {
+            if stateChanged {
+                micTriggeredRecording = false
+                autoStartedRecording = false
+            }
 
-            setupIdleMenu()
+            // Idle state - clean waveform icon
+            // Only update on state change
+            if stateChanged {
+                if let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Transcriptor") {
+                    let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+                    button.image = image.withSymbolConfiguration(config)
+                    button.image?.isTemplate = true
+                }
+                button.title = ""
+                button.imagePosition = .imageOnly
+
+                setupIdleMenu()
+                lastKnownRecordingState = false
+            }
         }
     }
 
@@ -496,6 +529,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if response == .alertFirstButtonReturn {
             let meetingName = inputField.stringValue.isEmpty ? "Untitled" : inputField.stringValue
             micTriggeredRecording = false  // Manual start - don't auto-stop based on mic
+            autoStartedRecording = false
             startRecording(name: meetingName)
         }
     }
@@ -524,15 +558,65 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func startRecording(name: String) {
-        // Run transcriptor start in background
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/bash")
+    func enforceAutoRecordingTimeoutIfNeeded(state: RecordingState) {
+        let config = ConfigManager.shared.loadConfig()
+        guard autoStartedRecording else { return }
+        guard config.maxAutoRecordingMinutes > 0 else { return }
+        guard let startTimeStr = state.startTime else { return }
+        guard let startTime = parseISO8601(startTimeStr) else { return }
 
-        // Use login shell to get user's PATH, or fall back to common locations
-        let transcriptorPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".bun/bin/transcriptor").path
-        task.arguments = ["-l", "-c", "\"\(transcriptorPath)\" start \"\(name)\" &"]
+        let elapsed = Date().timeIntervalSince(startTime)
+        let maxDuration = TimeInterval(config.maxAutoRecordingMinutes * 60)
+
+        if elapsed >= maxDuration {
+            micTriggeredRecording = false
+            autoStartedRecording = false
+            stopRecording()
+        }
+    }
+
+    func parseISO8601(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) {
+            return date
+        }
+
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
+    }
+
+    @objc func startRecording(name: String) {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+
+        // Try paths in order of preference
+        let wrapperPath = home.appendingPathComponent(".transcriptor/bin/transcriptor").path
+        let bunBinPath = home.appendingPathComponent(".bun/bin/transcriptor").path
+
+        var executablePath: String?
+        var arguments: [String] = []
+
+        if FileManager.default.fileExists(atPath: wrapperPath) {
+            // Use the installed wrapper script
+            executablePath = wrapperPath
+            arguments = ["start", name]
+        } else if FileManager.default.fileExists(atPath: bunBinPath) {
+            // Use bun's global install
+            executablePath = bunBinPath
+            arguments = ["start", name]
+        }
+
+        guard let path = executablePath else {
+            showError("Transcriptor CLI not found. Run install.sh first.")
+            return
+        }
+
+        // Run in background using Process
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: path)
+        task.arguments = arguments
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
 
         do {
             try task.run()
@@ -542,6 +626,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func stopRecording() {
+        autoStartedRecording = false
         // Write stop signal - the running CLI process watches for this
         let stopFile = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".transcriptor")
