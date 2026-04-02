@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build Things"
+  short_description: "Turn rough ideas into tested code changes"
+  default_prompt: "Use $build-things to implement this request end-to-end, including validation and concise delivery notes."

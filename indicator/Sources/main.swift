@@ -146,6 +146,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // Track last known recording state to avoid rebuilding menu unnecessarily
     // Starts as nil so the first updateStatusItem() call always sets up the icon/menu
     private var lastKnownRecordingState: Bool?
+    private var lastKnownTranscriptPanelVisibility: Bool?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Prevent macOS from auto-terminating this windowless accessory app
@@ -572,6 +573,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let state = StateManager.shared.cachedState
         let stateChanged = state.isRecording != lastKnownRecordingState
+        let transcriptPanelVisibility = isTranscriptPanelVisible
+        let transcriptPanelVisibilityChanged = transcriptPanelVisibility != lastKnownTranscriptPanelVisibility
 
         if state.isRecording {
             enforceAutoRecordingTimeoutIfNeeded(state: state)
@@ -596,15 +599,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let dot = isBlinking ? "●" : "○"
             button.title = " \(dot) \(elapsed)"
 
-            // Only rebuild menu on state change
+            // Surface the live transcript automatically when a recording starts.
             if stateChanged {
+                showTranscriptPanel(activate: false)
+            }
+
+            if stateChanged || transcriptPanelVisibilityChanged {
                 setupRecordingMenu(meetingName: meetingName, elapsed: elapsed)
                 lastKnownRecordingState = true
+                lastKnownTranscriptPanelVisibility = isTranscriptPanelVisible
             }
         } else {
             if stateChanged {
                 micTriggeredRecording = false
                 autoStartedRecording = false
+                hideTranscriptPanel()
             }
 
             // Idle state - clean waveform icon
@@ -620,6 +629,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
                 setupIdleMenu()
                 lastKnownRecordingState = false
+                lastKnownTranscriptPanelVisibility = nil
             }
         }
     }
@@ -734,12 +744,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateStatusItem()
     }
 
-    private func showTranscriptPanel() {
+    private func showTranscriptPanel(activate: Bool = true) {
         ensureTranscriptPanel()
         if let panel = transcriptPanel {
-            panel.makeKeyAndOrderFront(nil)
             panel.level = .floating
-            panel.orderFrontRegardless()
+            if activate {
+                panel.makeKeyAndOrderFront(nil)
+                panel.orderFrontRegardless()
+            } else {
+                panel.orderFront(nil)
+            }
             refreshLiveTranscriptPanel(force: true)
         }
     }
@@ -814,7 +828,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func refreshLiveTranscriptPanel(force: Bool = false) {
         guard isTranscriptPanelVisible else { return }
-        guard let textView = transcriptTextView else { return }
+        guard transcriptTextView != nil else { return }
 
         guard let fileURL = transcriptFileURL() else {
             transcriptPanelLastModified = nil
@@ -862,7 +876,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func formatTranscriptForDisplay(_ raw: String) -> String {
-        var lines = raw.components(separatedBy: .newlines)
+        let lines = raw.components(separatedBy: .newlines)
         var index = 0
 
         if lines.first == "---" {
