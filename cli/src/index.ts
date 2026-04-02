@@ -38,7 +38,7 @@ CONFIGURATION:
   transcriptRetentionDays   Days to keep transcripts (default: 90)
   deleteAudioAfterTranscript  Delete audio after transcription (default: false)
   whisperModel              Whisper model to use (default: large-v3-turbo)
-  chunkDurationSeconds      Recording chunk duration (default: 30)
+  chunkDurationSeconds      Recording chunk duration (default: 10)
   requireGoogleMeetLinkForCalendarAutoStart  Require meet.google.com link for calendar auto-start (default: true)
   maxAutoRecordingMinutes   Hard cap for auto-start recordings; 0 disables (default: 120)
 `);

@@ -55,7 +55,7 @@ const defaultConfig: Config = {
   transcriptRetentionDays: 90,
   deleteAudioAfterTranscript: false,
   whisperModel: "large-v3-turbo",
-  chunkDurationSeconds: 30,
+  chunkDurationSeconds: 10,
   // Calendar integration
   calendarEnabled: true,
   autoStartRecording: true,
