@@ -81,7 +81,7 @@ class StateManager {
 
 // MARK: - App Delegate
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private struct MeetingAppContext {
         let appName: String
         let recordingName: String
@@ -128,6 +128,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Cache for upcoming meeting display
     var cachedNextMeeting: UpcomingMeeting?
 
+    // Live transcript sidebar state
+    var transcriptPanel: NSPanel?
+    var transcriptTextView: NSTextView?
+    var transcriptPanelOutputDir: String?
+    var transcriptPanelLastModified: Date?
+    var transcriptPanelLastSize: Int64?
+    var transcriptPanelTranscriptPath: String?
+    let transcriptPlaceholderText = "Waiting for transcript…\n\nTranscript will appear here as chunks finish."
+    let transcriptMaxLines = 250
+
     // Track if we started recording via mic detection (for auto-stop)
     var micTriggeredRecording = false
     var autoStartedRecording = false
@@ -153,6 +163,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             StateManager.shared.refreshState {
                 self?.updateStatusItem()
+                self?.refreshLiveTranscriptPanelIfNeeded()
             }
         }
 
@@ -688,6 +699,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Duration: \(elapsed)", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
 
+        let transcriptTitle = isTranscriptPanelVisible ? "Hide Live Transcript" : "Show Live Transcript"
+        let transcriptItem = NSMenuItem(title: transcriptTitle, action: #selector(toggleLiveTranscriptPanel), keyEquivalent: "")
+        transcriptItem.target = self
+        menu.addItem(transcriptItem)
+        menu.addItem(NSMenuItem.separator())
+
         let stopItem = NSMenuItem(title: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "s")
         stopItem.target = self
         menu.addItem(stopItem)
@@ -699,6 +716,182 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
 
         statusItem?.menu = menu
+    }
+
+    // MARK: - Live Transcript Panel
+
+    private var isTranscriptPanelVisible: Bool {
+        transcriptPanel?.isVisible == true
+    }
+
+    @objc func toggleLiveTranscriptPanel() {
+        if isTranscriptPanelVisible {
+            hideTranscriptPanel()
+        } else {
+            showTranscriptPanel()
+        }
+
+        updateStatusItem()
+    }
+
+    private func showTranscriptPanel() {
+        ensureTranscriptPanel()
+        if let panel = transcriptPanel {
+            panel.makeKeyAndOrderFront(nil)
+            panel.level = .floating
+            panel.orderFrontRegardless()
+            refreshLiveTranscriptPanel(force: true)
+        }
+    }
+
+    private func hideTranscriptPanel() {
+        transcriptPanel?.orderOut(nil)
+    }
+
+    private func ensureTranscriptPanel() {
+        guard transcriptPanel == nil else { return }
+
+        let contentRect = NSRect(x: 0, y: 0, width: 520, height: 360)
+        let panel = NSPanel(
+            contentRect: contentRect,
+            styleMask: [.titled, .closable, .resizable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "Live Transcript"
+        panel.isFloatingPanel = true
+        panel.isMovableByWindowBackground = true
+        panel.hidesOnDeactivate = false
+        panel.level = .floating
+        panel.isReleasedWhenClosed = false
+        panel.delegate = self
+
+        let scrollView = NSScrollView(frame: panel.contentView?.bounds ?? contentRect)
+        scrollView.hasVerticalScroller = true
+        scrollView.autoresizingMask = [.width, .height]
+        scrollView.borderType = .bezelBorder
+
+        let textView = NSTextView(frame: scrollView.bounds)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.string = transcriptPlaceholderText
+
+        scrollView.documentView = textView
+        scrollView.contentView.scrollToVisible(NSRect(x: 0, y: 0, width: 1, height: 1))
+
+        if let contentView = panel.contentView {
+            contentView.addSubview(scrollView)
+        }
+
+        transcriptPanel = panel
+        transcriptTextView = textView
+    }
+
+    private func refreshLiveTranscriptPanelIfNeeded() {
+        guard isTranscriptPanelVisible else { return }
+        refreshLiveTranscriptPanel()
+    }
+
+    private func transcriptFileURL() -> URL? {
+        let state = StateManager.shared.cachedState
+        if let outputDir = state.outputDir {
+            transcriptPanelOutputDir = outputDir
+        }
+        if let outputDir = transcriptPanelOutputDir {
+            let filePath = URL(fileURLWithPath: outputDir).appendingPathComponent("transcript.md")
+            if transcriptPanelTranscriptPath != filePath.path {
+                transcriptPanelTranscriptPath = filePath.path
+                transcriptPanelLastModified = nil
+                transcriptPanelLastSize = nil
+            }
+            return filePath
+        }
+        return nil
+    }
+
+    private func refreshLiveTranscriptPanel(force: Bool = false) {
+        guard isTranscriptPanelVisible else { return }
+        guard let textView = transcriptTextView else { return }
+
+        guard let fileURL = transcriptFileURL() else {
+            transcriptPanelLastModified = nil
+            setTranscriptText(transcriptPlaceholderText)
+            return
+        }
+
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+              let modifiedDate = attrs[.modificationDate] as? Date,
+              let fileSize = attrs[.size] as? NSNumber else {
+            if transcriptPanelLastModified == nil {
+                setTranscriptText(transcriptPlaceholderText)
+            }
+            return
+        }
+        let fileSizeValue = fileSize.int64Value
+
+        if !force && transcriptPanelLastModified == modifiedDate && transcriptPanelLastSize == fileSizeValue {
+            return
+        }
+        transcriptPanelLastModified = modifiedDate
+        transcriptPanelLastSize = fileSizeValue
+
+        guard let contents = try? String(contentsOf: fileURL, encoding: .utf8) else {
+            if transcriptPanelLastModified == nil {
+                setTranscriptText(transcriptPlaceholderText)
+            }
+            return
+        }
+
+        let displayText = formatTranscriptForDisplay(contents)
+        if displayText.isEmpty {
+            setTranscriptText("Waiting for transcript to be generated…")
+            return
+        }
+
+        setTranscriptText(displayText)
+    }
+
+    private func setTranscriptText(_ text: String) {
+        guard let textView = transcriptTextView else { return }
+        if textView.string == text { return }
+        textView.string = text
+        textView.scrollToEndOfDocument(nil)
+    }
+
+    private func formatTranscriptForDisplay(_ raw: String) -> String {
+        var lines = raw.components(separatedBy: .newlines)
+        var index = 0
+
+        if lines.first == "---" {
+            index = 1
+            while index < lines.count && lines[index] != "---" {
+                index += 1
+            }
+            if index < lines.count {
+                index += 1
+            }
+        }
+
+        if index < lines.count && lines[index].hasPrefix("# ") {
+            index += 1
+        }
+
+        while index < lines.count && lines[index].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            index += 1
+        }
+
+        guard index < lines.count else { return "" }
+
+        var contentLines = Array(lines[index...])
+        if contentLines.count > transcriptMaxLines {
+            contentLines = Array(contentLines.suffix(transcriptMaxLines))
+            return "…\n\n" + contentLines.joined(separator: "\n")
+        }
+
+        return contentLines.joined(separator: "\n")
     }
 
     // MARK: - Actions
@@ -851,6 +1044,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             NSApplication.shared.terminate(nil)
         }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let closedPanel = notification.object as? NSPanel,
+              closedPanel == transcriptPanel else { return }
+
+        updateStatusItem()
     }
 
     func showError(_ message: String) {
