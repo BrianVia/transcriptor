@@ -42,7 +42,10 @@ export const paths = {
   transcripts: TRANSCRIPTS_DIR,
   whisperBin: join(BIN_DIR, "whisper-cpp"),
   whisperModel: join(BIN_DIR, "models"),
-  audioBin: join(BIN_DIR, "transcriptor-audio"),
+  audioApp: join(BIN_DIR, "transcriptor-audio.app"),
+  audioBin: join(BIN_DIR, "transcriptor-audio.app", "Contents", "MacOS", "transcriptor-audio"),
+  audioPidFile: join(TRANSCRIPTOR_DIR, "audio.pid"),
+  completedChunksFile: join(TRANSCRIPTOR_DIR, "completed-chunks"),
   indicatorBin: join(BIN_DIR, "transcriptor-indicator"),
   stopSignal: join(TRANSCRIPTOR_DIR, "stop-signal"),
 };

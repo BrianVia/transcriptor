@@ -61,15 +61,48 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 echo -e "${BLUE}Building audio capture binary...${NC}"
 cd "$SCRIPT_DIR/audio-capture"
 swift build -c release
-cp .build/release/transcriptor-audio "$BIN_DIR/"
-echo -e "${GREEN}✓ Audio capture binary built${NC}"
+# Create .app bundle for proper macOS screen recording permission persistence
+AUDIO_APP="$BIN_DIR/transcriptor-audio.app"
+mkdir -p "$AUDIO_APP/Contents/MacOS"
+cp .build/release/transcriptor-audio "$AUDIO_APP/Contents/MacOS/"
+cat > "$AUDIO_APP/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.transcriptor.audio</string>
+    <key>CFBundleName</key>
+    <string>Transcriptor Audio</string>
+    <key>CFBundleExecutable</key>
+    <string>transcriptor-audio</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Transcriptor needs screen recording permission to capture system audio for transcription.</string>
+</dict>
+</plist>
+PLIST
+if security find-identity -v -p codesigning 2>&1 | grep -q "Transcriptor Local"; then
+    codesign --force --sign "Transcriptor Local" --identifier "com.transcriptor.audio" "$AUDIO_APP"
+fi
+# Register with Launch Services so macOS properly tracks screen recording permission by bundle ID
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$AUDIO_APP"
+echo -e "${GREEN}✓ Audio capture binary built and bundled${NC}"
 
 # Build menu bar indicator
 echo -e "${BLUE}Building menu bar indicator...${NC}"
 cd "$SCRIPT_DIR/indicator"
 swift build -c release
 cp .build/release/transcriptor-indicator "$BIN_DIR/"
-echo -e "${GREEN}✓ Menu bar indicator built${NC}"
+codesign --force --sign "Transcriptor Local" --identifier "com.transcriptor.indicator" "$BIN_DIR/transcriptor-indicator"
+echo -e "${GREEN}✓ Menu bar indicator built and signed${NC}"
 
 # Clone and build whisper.cpp
 if [ ! -d "$WHISPER_DIR" ]; then

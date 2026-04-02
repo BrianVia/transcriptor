@@ -49,8 +49,8 @@ export async function startRecording(meetingName: string): Promise<void> {
     process.exit(1);
   }
 
-  if (!existsSync(paths.audioBin)) {
-    console.error(`Audio capture binary not found at ${paths.audioBin}`);
+  if (!existsSync(paths.audioApp)) {
+    console.error(`Audio capture app not found at ${paths.audioApp}`);
     console.error("Run the install script first: ./install.sh");
     process.exit(1);
   }
@@ -87,7 +87,7 @@ duration:
   console.log(`📁 Output: ${currentOutputDir}`);
   console.log(`📝 Transcript: ${transcriptPath}`);
 
-  await startChunk();
+  await startAudioProcess();
 
   chunkInterval = setInterval(async () => {
     await rotateChunk();
@@ -98,7 +98,7 @@ duration:
     meetingName,
     startTime: now.toISOString(),
     outputDir: currentOutputDir,
-    audioPid: audioProcess?.pid ?? null,
+    audioPid: audioPid ?? audioProcess?.pid ?? null,
     indicatorPid: null,
   });
 
@@ -118,30 +118,73 @@ duration:
   }, 500);
 }
 
-async function startChunk(): Promise<void> {
-  currentChunkNumber++;
-  const chunkPath = join(currentOutputDir, "chunks", `chunk_${currentChunkNumber.toString().padStart(4, "0")}.wav`);
+let audioPid: number | null = null;
+let processedChunks = new Set<string>();
+let chunkWatcher: Timer | null = null;
 
-  audioProcess = spawn([paths.audioBin, "--output", chunkPath], {
+async function startAudioProcess(): Promise<void> {
+  currentChunkNumber = 1;
+  const chunkPrefix = join(currentOutputDir, "chunks", "chunk_");
+
+  // Clean up stale files
+  try { unlinkSync(paths.audioPidFile); } catch {}
+  try { unlinkSync(paths.completedChunksFile); } catch {}
+
+  // Launch via `open -a` so macOS properly registers the app with Launch Services / TCC.
+  // This is what makes screen recording permission persist across sessions.
+  audioProcess = spawn(["open", "-a", paths.audioApp, "--args", "--chunk-prefix", chunkPrefix], {
     stdout: "ignore",
-    stderr: "pipe",
+    stderr: "ignore",
   });
 
-  console.log(`   📼 Chunk ${currentChunkNumber} started`);
+  // Wait for PID file to appear (audio process writes it on startup)
+  const maxWait = 10_000;
+  const start = Date.now();
+  while (Date.now() - start < maxWait) {
+    if (existsSync(paths.audioPidFile)) {
+      const pidStr = readFileSync(paths.audioPidFile, "utf-8").trim();
+      audioPid = parseInt(pidStr);
+      if (!isNaN(audioPid)) break;
+    }
+    await Bun.sleep(100);
+  }
+
+  if (!audioPid) {
+    console.error("   ❌ Audio capture process failed to start");
+    process.exit(1);
+  }
+
+  // Watch the completed-chunks file for transcription
+  processedChunks.clear();
+  chunkWatcher = setInterval(() => {
+    if (!existsSync(paths.completedChunksFile)) return;
+    const content = readFileSync(paths.completedChunksFile, "utf-8");
+    const lines = content.split("\n").filter(l => l.trim());
+    for (const chunkPath of lines) {
+      if (processedChunks.has(chunkPath)) continue;
+      processedChunks.add(chunkPath);
+      const match = chunkPath.match(/chunk_(\d+)\.wav$/);
+      const chunkNum = match ? parseInt(match[1]) : 0;
+      if (chunkNum > 0 && existsSync(chunkPath)) {
+        transcribeChunkAsync(chunkPath, chunkNum);
+      }
+    }
+  }, 500);
+
+  console.log(`   📼 Recording started (pid: ${audioPid})`);
 }
 
 async function rotateChunk(): Promise<void> {
-  const prevChunkNumber = currentChunkNumber;
-  const prevChunkPath = join(currentOutputDir, "chunks", `chunk_${prevChunkNumber.toString().padStart(4, "0")}.wav`);
+  if (!audioPid) return;
 
-  if (audioProcess) {
-    audioProcess.kill("SIGTERM");
-    await audioProcess.exited;
-    audioProcess = null;
+  // Send SIGUSR1 to rotate chunk — no process restart, no permission re-check
+  currentChunkNumber++;
+  try {
+    process.kill(audioPid, "SIGUSR1");
+  } catch {
+    console.error(`   ❌ Failed to signal audio process (pid ${audioPid})`);
   }
-
-  await startChunk();
-  transcribeChunkAsync(prevChunkPath, prevChunkNumber);
+  console.log(`   📼 Chunk ${currentChunkNumber} started`);
 }
 
 async function transcribeChunkAsync(chunkPath: string, chunkNumber: number): Promise<void> {
@@ -187,15 +230,20 @@ export async function stopRecording(): Promise<void> {
     chunkInterval = null;
   }
 
-  if (audioProcess) {
-    audioProcess.kill("SIGTERM");
-    await audioProcess.exited;
-    audioProcess = null;
+  if (chunkWatcher) {
+    clearInterval(chunkWatcher);
+    chunkWatcher = null;
   }
 
-  if (state.audioPid) {
-    try { process.kill(state.audioPid, "SIGTERM"); } catch {}
+  // Stop the audio process via PID (it was launched via `open`, not as a direct child)
+  const pidToKill = audioPid ?? state.audioPid;
+  if (pidToKill) {
+    try { process.kill(pidToKill, "SIGTERM"); } catch {}
+    // Wait briefly for it to finalize the last chunk
+    await Bun.sleep(500);
   }
+  audioPid = null;
+  audioProcess = null;
 
   // Determine output directory
   const outputDir = currentOutputDir || state.outputDir;
@@ -204,13 +252,27 @@ export async function stopRecording(): Promise<void> {
     process.exit(0);
   }
 
-  // Transcribe final chunk
-  if (currentChunkNumber > 0) {
+  // Transcribe any remaining chunks (including the final one written on SIGTERM)
+  if (existsSync(paths.completedChunksFile)) {
+    const content = readFileSync(paths.completedChunksFile, "utf-8");
+    const lines = content.split("\n").filter(l => l.trim());
+    for (const chunkPath of lines) {
+      if (processedChunks.has(chunkPath)) continue;
+      processedChunks.add(chunkPath);
+      const match = chunkPath.match(/chunk_(\d+)\.wav$/);
+      const chunkNum = match ? parseInt(match[1]) : 0;
+      if (chunkNum > 0 && existsSync(chunkPath)) {
+        await transcribeChunkAsync(chunkPath, chunkNum);
+      }
+    }
+  } else if (currentChunkNumber > 0) {
+    // Fallback: transcribe by known chunk number
     const finalChunkPath = join(outputDir, "chunks", `chunk_${currentChunkNumber.toString().padStart(4, "0")}.wav`);
-    if (existsSync(finalChunkPath)) {
+    if (existsSync(finalChunkPath) && !processedChunks.has(finalChunkPath)) {
       await transcribeChunkAsync(finalChunkPath, currentChunkNumber);
     }
   } else if (state.outputDir) {
+    // Fallback for external stop: find last chunk on disk
     currentOutputDir = state.outputDir;
     const chunksDir = join(currentOutputDir, "chunks");
     if (existsSync(chunksDir)) {
