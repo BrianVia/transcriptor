@@ -1,6 +1,9 @@
 import AppKit
 import EventKit
 import Foundation
+import os.log
+
+private let logger = Logger(subsystem: "com.transcriptor.indicator", category: "AppDelegate")
 
 // MARK: - State Management
 
@@ -18,6 +21,23 @@ class StateManager {
 
     private let stateFile: URL
     private let transcriptorDir: URL
+    private let ioQueue = DispatchQueue(label: "com.transcriptor.state-io", qos: .utility)
+
+    // Cached state updated from background queue — always safe to read from main thread
+    private(set) var cachedState = RecordingState(isRecording: false)
+    private(set) var cachedElapsedTime: String?
+
+    // Reusable formatters (creating these is expensive)
+    private let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private let isoFormatterNoFrac: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
 
     init() {
         transcriptorDir = FileManager.default.homeDirectoryForCurrentUser
@@ -25,23 +45,32 @@ class StateManager {
         stateFile = transcriptorDir.appendingPathComponent("state.json")
     }
 
-    func loadState() -> RecordingState {
-        guard FileManager.default.fileExists(atPath: stateFile.path),
-              let data = try? Data(contentsOf: stateFile),
-              let state = try? JSONDecoder().decode(RecordingState.self, from: data) else {
-            return RecordingState(isRecording: false)
+    /// Reads state.json on a background queue and updates cached values.
+    /// Calls the completion on the main queue when done.
+    func refreshState(completion: @escaping () -> Void) {
+        ioQueue.async { [self] in
+            let state: RecordingState
+            if FileManager.default.fileExists(atPath: stateFile.path),
+               let data = try? Data(contentsOf: stateFile),
+               let decoded = try? JSONDecoder().decode(RecordingState.self, from: data) {
+                state = decoded
+            } else {
+                state = RecordingState(isRecording: false)
+            }
+
+            let elapsed = Self.computeElapsed(state: state, isoFormatter: isoFormatter, isoFormatterNoFrac: isoFormatterNoFrac)
+
+            DispatchQueue.main.async {
+                self.cachedState = state
+                self.cachedElapsedTime = elapsed
+                completion()
+            }
         }
-        return state
     }
 
-    func getElapsedTime() -> String? {
-        let state = loadState()
+    private static func computeElapsed(state: RecordingState, isoFormatter: ISO8601DateFormatter, isoFormatterNoFrac: ISO8601DateFormatter) -> String? {
         guard state.isRecording, let startTimeStr = state.startTime else { return nil }
-
-        // JavaScript's toISOString() produces: 2024-12-08T10:30:00.000Z
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let startTime = formatter.date(from: startTimeStr) else { return nil }
+        guard let startTime = isoFormatter.date(from: startTimeStr) ?? isoFormatterNoFrac.date(from: startTimeStr) else { return nil }
 
         let elapsed = Int(Date().timeIntervalSince(startTime))
         let minutes = elapsed / 60
@@ -53,6 +82,44 @@ class StateManager {
 // MARK: - App Delegate
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    private struct MeetingAppContext {
+        let appName: String
+        let recordingName: String
+        let reason: String
+    }
+
+    private let knownMeetingApps: [(bundleID: String, appName: String)] = [
+        ("us.zoom.xos", "Zoom"),
+        ("com.microsoft.teams", "Microsoft Teams"),
+        ("com.microsoft.teams2", "Microsoft Teams"),
+        ("com.apple.FaceTime", "FaceTime"),
+        ("com.cisco.webexmeetingsapp", "Webex"),
+        ("com.tinyspeck.slackmacgap", "Slack"),
+        ("com.slack.Slack", "Slack"),
+        ("com.hnc.Discord", "Discord"),
+        ("net.whatsapp.WhatsApp", "WhatsApp"),
+    ]
+
+    private let slackBundleIDs: Set<String> = [
+        "com.tinyspeck.slackmacgap",
+        "com.slack.Slack",
+    ]
+
+    private let ignoredVoiceInputBundleIDs: Set<String> = [
+        "com.electron.wispr-flow",
+        "com.electron.wispr-flow.accessibility-mac-app",
+        "com.electron.wispr-flow.helper",
+    ]
+
+    private let browserBundleIDs: Set<String> = [
+        "com.apple.Safari",
+        "com.google.Chrome",
+        "company.thebrowser.Browser",
+        "com.brave.Browser",
+        "org.mozilla.firefox",
+        "com.microsoft.edgemac",
+    ]
+
     var statusItem: NSStatusItem?
     var timer: Timer?
     var calendarTimer: Timer?
@@ -71,20 +138,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastKnownRecordingState: Bool?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Prevent macOS from auto-terminating this windowless accessory app
+        ProcessInfo.processInfo.disableAutomaticTermination("Menu bar indicator must remain running")
+        ProcessInfo.processInfo.disableSuddenTermination()
+
+        logger.notice("Transcriptor indicator starting up")
+
         // Create status item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         updateStatusItem()
 
-        // Update timer - check state every second
+        // Update timer - refresh state from disk (background) every second, then update UI
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.updateStatusItem()
+            StateManager.shared.refreshState {
+                self?.updateStatusItem()
+            }
         }
 
         // Setup signal handling
         setupSignalHandling()
 
         // Setup calendar integration
+        let config = ConfigManager.shared.loadConfig()
+        logger.notice("Config loaded — calendar: \(config.calendarEnabled), micDetection: \(config.microphoneDetectionEnabled), micAutoStart: \(config.microphoneAutoStart)")
         setupCalendarIntegration()
 
         // Setup microphone monitoring
@@ -128,35 +205,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Don't check if already recording
-        let state = StateManager.shared.loadState()
+        let state = StateManager.shared.cachedState
         if state.isRecording {
             cachedNextMeeting = nil
             return
         }
 
-        // Get meetings starting within configured window + 1 minute buffer
+        // Look ahead far enough: reminder window + 5 minutes for late joins + buffer
+        let lookAheadMinutes = max(config.reminderMinutesBefore + 1, 10)
         let meetings = CalendarManager.shared.getUpcomingMeetings(
-            within: config.reminderMinutesBefore + 1,
+            within: lookAheadMinutes,
             config: config
         )
 
         let now = Date()
-
-        // Find meetings sorted by start time
         let sortedMeetings = meetings.sorted { $0.startDate < $1.startDate }
+
+        if !sortedMeetings.isEmpty {
+            let descriptions = sortedMeetings.map { m in
+                let delta = Int(m.startDate.timeIntervalSince(now))
+                return "\(m.title) (\(delta)s, meet=\(m.hasGoogleMeetLink), video=\(m.isVideoMeeting))"
+            }
+            logger.notice("Calendar check: \(descriptions.joined(separator: "; "), privacy: .public)")
+        }
 
         // For menu display: only show meetings that haven't started yet
         cachedNextMeeting = sortedMeetings.first { $0.startDate > now }
 
-        // For auto-start: check if any meeting is within the start window (-60s to +60s)
+        // For auto-start: check if any meeting is within the start window
+        // Allow up to 5 minutes after scheduled start (late joins) and 60s before
         for meeting in sortedMeetings {
             let timeUntilStart = meeting.startDate.timeIntervalSince(now)
-            if timeUntilStart <= 60 && timeUntilStart >= -60 {
+            if timeUntilStart <= 60 && timeUntilStart >= -300 {
                 if config.autoStartRecording &&
                     config.requireGoogleMeetLinkForCalendarAutoStart &&
                     !meeting.hasGoogleMeetLink {
+                    logger.notice("Skipping auto-start for '\(meeting.title, privacy: .public)': no Google Meet link")
                     continue
                 }
+                logger.notice("Auto-starting for '\(meeting.title, privacy: .public)' (delta: \(Int(timeUntilStart))s)")
                 handleMeetingStart(meeting, config: config)
                 break  // Only handle one meeting at a time
             }
@@ -196,7 +283,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let state = StateManager.shared.loadState()
+        let state = StateManager.shared.cachedState
         if state.isRecording {
             cachedNextMeeting = nil
             return
@@ -270,7 +357,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func handleMicrophoneActivityChange(isActive: Bool) {
         let config = ConfigManager.shared.loadConfig()
-        let state = StateManager.shared.loadState()
+        let state = StateManager.shared.cachedState
+
+        logger.notice("Mic activity changed: active=\(isActive), autoStart=\(config.microphoneAutoStart), isRecording=\(state.isRecording)")
 
         if isActive {
             // Microphone became active
@@ -294,29 +383,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func handleMicrophoneActivated(config: CalendarConfig) {
-        // Check if there's an upcoming calendar meeting to use as the name
-        var meetingName: String? = nil
+        guard let meetingContext = detectMeetingAppContext(config: config) else {
+            logger.notice("Mic activation ignored because no supported meeting context was found")
+            return
+        }
 
-        if config.calendarEnabled, let nextMeeting = cachedNextMeeting {
-            // If meeting is starting soon (within 5 minutes), use its name
-            let timeUntilStart = nextMeeting.startDate.timeIntervalSince(Date())
+        if let nearbyMeeting = nearestCalendarMeeting(config: config) {
+            let timeUntilStart = nearbyMeeting.startDate.timeIntervalSince(Date())
             if timeUntilStart <= 300 && timeUntilStart >= -300 {
-                meetingName = nextMeeting.title
-                CalendarManager.shared.markEventAsHandled(nextMeeting.eventId)
+                CalendarManager.shared.markEventAsHandled(nearbyMeeting.eventId)
                 cachedNextMeeting = nil
             }
         }
-
-        // Default name if no calendar match
-        let name = meetingName ?? "Call \(formatDate(Date()))"
 
         // Mark as mic-triggered for auto-stop tracking
         micTriggeredRecording = true
         autoStartedRecording = true
 
+        logger.notice("Mic activation matched app context: app=\(meetingContext.appName, privacy: .public), reason=\(meetingContext.reason, privacy: .public), recordingName=\(meetingContext.recordingName, privacy: .public)")
+
         // Show brief notification and start recording
-        showMicrophoneDetectedNotification(meetingName: name)
-        startRecording(name: name)
+        showMicrophoneDetectedNotification(meetingName: meetingContext.recordingName)
+        startRecording(name: meetingContext.recordingName)
 
         // Refresh the meeting cache
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
@@ -325,7 +413,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func handleMicrophoneAutoStop() {
-        let state = StateManager.shared.loadState()
+        let state = StateManager.shared.cachedState
         guard state.isRecording && micTriggeredRecording else { return }
 
         // Verify mic is still idle
@@ -337,12 +425,119 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showMicrophoneDetectedNotification(meetingName: String) {
-        // Post a user notification
-        let notification = NSUserNotification()
-        notification.title = "Recording Started"
-        notification.informativeText = "Microphone detected. Recording: \(meetingName)"
-        notification.soundName = nil
-        NSUserNotificationCenter.default.deliver(notification)
+        let escaped = meetingName.replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "display notification \"Microphone detected. Recording: \(escaped)\" with title \"Recording Started\""
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", script]
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
+        try? task.run()
+    }
+
+    private func detectMeetingAppContext(config: CalendarConfig) -> MeetingAppContext? {
+        let runningBundleIDs = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+        let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let nearbyMeeting = nearestCalendarMeeting(config: config)
+        let nearbyGoogleMeetMeeting = nearestCalendarMeeting(config: config, requireGoogleMeetLink: true)
+        let hasNearbyMeeting = nearbyMeeting != nil
+
+        if let frontmostBundleID, ignoredVoiceInputBundleIDs.contains(frontmostBundleID) {
+            logger.notice("Ignoring mic activation because frontmost app is excluded voice input app: \(frontmostBundleID, privacy: .public)")
+            return nil
+        }
+
+        if let frontmostBundleID, slackBundleIDs.contains(frontmostBundleID) {
+            let recordingName = nearbyMeeting?.title ?? "Slack Huddle \(formatDate(Date()))"
+            return MeetingAppContext(
+                appName: "Slack",
+                recordingName: recordingName,
+                reason: "slack-frontmost"
+            )
+        }
+
+        if hasNearbyMeeting && !runningBundleIDs.isDisjoint(with: slackBundleIDs) {
+            let recordingName = nearbyMeeting?.title ?? "Slack Huddle \(formatDate(Date()))"
+            return MeetingAppContext(
+                appName: "Slack",
+                recordingName: recordingName,
+                reason: "slack-running-near-calendar-meeting"
+            )
+        }
+
+        if let frontmostBundleID,
+           let frontmostMeetingApp = knownMeetingApps.first(where: { $0.bundleID == frontmostBundleID }) {
+            let recordingName = nearbyMeeting?.title ?? "\(frontmostMeetingApp.appName) Call \(formatDate(Date()))"
+            return MeetingAppContext(
+                appName: frontmostMeetingApp.appName,
+                recordingName: recordingName,
+                reason: "frontmost-meeting-app"
+            )
+        }
+
+        if hasNearbyMeeting {
+            for meetingApp in knownMeetingApps where !slackBundleIDs.contains(meetingApp.bundleID) {
+                if runningBundleIDs.contains(meetingApp.bundleID) {
+                    let recordingName = nearbyMeeting?.title ?? "\(meetingApp.appName) Call \(formatDate(Date()))"
+                    return MeetingAppContext(
+                        appName: meetingApp.appName,
+                        recordingName: recordingName,
+                        reason: "known-meeting-app-running-near-calendar-meeting"
+                    )
+                }
+            }
+        }
+
+        if let frontmostBundleID,
+           browserBundleIDs.contains(frontmostBundleID),
+           let googleMeetMeeting = nearbyGoogleMeetMeeting {
+            return MeetingAppContext(
+                appName: "Google Meet",
+                recordingName: googleMeetMeeting.title,
+                reason: "google-meet-frontmost-browser"
+            )
+        }
+
+        if let googleMeetMeeting = nearbyGoogleMeetMeeting,
+           !runningBundleIDs.isDisjoint(with: browserBundleIDs),
+           hasNearbyMeeting {
+            return MeetingAppContext(
+                appName: "Google Meet",
+                recordingName: googleMeetMeeting.title,
+                reason: "google-meet-near-calendar-meeting-browser-running"
+            )
+        }
+
+        if let nearbyMeeting,
+           nearbyMeeting.isVideoMeeting,
+           let frontmostBundleID,
+           browserBundleIDs.contains(frontmostBundleID) {
+            return MeetingAppContext(
+                appName: "Calendar Meeting",
+                recordingName: nearbyMeeting.title,
+                reason: "nearby-video-calendar-meeting-frontmost-browser"
+            )
+        }
+
+        return nil
+    }
+
+    private func nearestCalendarMeeting(config: CalendarConfig, requireGoogleMeetLink: Bool = false) -> UpcomingMeeting? {
+        guard config.calendarEnabled else { return nil }
+
+        let meetings = CalendarManager.shared.getUpcomingMeetings(within: 10, config: config)
+        let now = Date()
+
+        return meetings
+            .filter { meeting in
+                let delta = meeting.startDate.timeIntervalSince(now)
+                guard delta <= 300 && delta >= -300 else { return false }
+                return !requireGoogleMeetLink || meeting.hasGoogleMeetLink
+            }
+            .sorted { lhs, rhs in
+                abs(lhs.startDate.timeIntervalSince(now)) < abs(rhs.startDate.timeIntervalSince(now))
+            }
+            .first
     }
 
     @objc func toggleMicrophoneDetection() {
@@ -364,7 +559,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func updateStatusItem() {
         guard let button = statusItem?.button else { return }
 
-        let state = StateManager.shared.loadState()
+        let state = StateManager.shared.cachedState
         let stateChanged = state.isRecording != lastKnownRecordingState
 
         if state.isRecording {
@@ -374,7 +569,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             isBlinking.toggle()
 
             let meetingName = state.meetingName ?? "Recording"
-            let elapsed = StateManager.shared.getElapsedTime() ?? "0:00"
+            let elapsed = StateManager.shared.cachedElapsedTime ?? "0:00"
 
             // Only update image on state change (expensive operation)
             if stateChanged {
@@ -588,39 +783,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func startRecording(name: String) {
         let home = FileManager.default.homeDirectoryForCurrentUser
-
-        // Try paths in order of preference
         let wrapperPath = home.appendingPathComponent(".transcriptor/bin/transcriptor").path
-        let bunBinPath = home.appendingPathComponent(".bun/bin/transcriptor").path
 
-        var executablePath: String?
-        var arguments: [String] = []
-
-        if FileManager.default.fileExists(atPath: wrapperPath) {
-            // Use the installed wrapper script
-            executablePath = wrapperPath
-            arguments = ["start", name]
-        } else if FileManager.default.fileExists(atPath: bunBinPath) {
-            // Use bun's global install
-            executablePath = bunBinPath
-            arguments = ["start", name]
-        }
-
-        guard let path = executablePath else {
-            showError("Transcriptor CLI not found. Run install.sh first.")
+        guard FileManager.default.fileExists(atPath: wrapperPath) else {
+            showError("Transcriptor CLI not found at \(wrapperPath). Run install.sh first.")
             return
         }
 
-        // Run in background using Process
+        let escapedName = name.replacingOccurrences(of: "'", with: "'\\''")
+        logger.notice("Starting recording: \(name, privacy: .public) via \(wrapperPath, privacy: .public)")
+
+        // Launch via /bin/zsh so the wrapper script's shebang and PATH setup work
+        // even from a LaunchAgent with minimal environment
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: path)
-        task.arguments = arguments
+        task.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        task.arguments = ["-c", "'\(wrapperPath)' start '\(escapedName)' &"]
         task.standardOutput = FileHandle.nullDevice
         task.standardError = FileHandle.nullDevice
 
         do {
             try task.run()
         } catch {
+            logger.notice("Failed to start recording: \(error.localizedDescription, privacy: .public)")
             showError("Failed to start recording: \(error.localizedDescription)")
         }
     }
@@ -657,7 +841,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func quitApp() {
         // Stop recording if active
-        let state = StateManager.shared.loadState()
+        let state = StateManager.shared.cachedState
         if state.isRecording {
             stopRecording()
             // Give it a moment to stop

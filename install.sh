@@ -13,6 +13,9 @@ TRANSCRIPTOR_DIR="$HOME/.transcriptor"
 BIN_DIR="$TRANSCRIPTOR_DIR/bin"
 MODELS_DIR="$BIN_DIR/models"
 WHISPER_DIR="$BIN_DIR/whisper-cpp"
+LOGS_DIR="$TRANSCRIPTOR_DIR/logs"
+LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
+LAUNCH_AGENT_PLIST="$LAUNCH_AGENTS_DIR/com.transcriptor.indicator.plist"
 
 echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║     Transcriptor Installer v1.0        ║${NC}"
@@ -48,6 +51,7 @@ fi
 echo -e "${BLUE}Creating directories...${NC}"
 mkdir -p "$BIN_DIR"
 mkdir -p "$MODELS_DIR"
+mkdir -p "$LOGS_DIR"
 mkdir -p "$HOME/transcripts"
 
 # Get script directory
@@ -76,8 +80,9 @@ fi
 echo -e "${BLUE}Building whisper.cpp...${NC}"
 cd "$WHISPER_DIR"
 git pull
-make clean
-make -j
+rm -rf build
+cmake -B build
+cmake --build build --config Release -j
 
 echo -e "${GREEN}✓ whisper.cpp built${NC}"
 
@@ -148,18 +153,47 @@ echo -e "${YELLOW}║  4. Restart Terminal                                      
 echo -e "${YELLOW}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Raycast extension info
-echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║  Raycast Extension                                         ║${NC}"
-echo -e "${BLUE}╠════════════════════════════════════════════════════════════╣${NC}"
-echo -e "${BLUE}║  To install the Raycast extension:                         ║${NC}"
-echo -e "${BLUE}║                                                            ║${NC}"
-echo -e "${BLUE}║  cd $SCRIPT_DIR/raycast-extension${NC}"
-echo -e "${BLUE}║  npm install                                               ║${NC}"
-echo -e "${BLUE}║  npm run dev                                               ║${NC}"
-echo -e "${BLUE}║                                                            ║${NC}"
-echo -e "${BLUE}║  Or import it in Raycast via Extensions → Import           ║${NC}"
-echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
+# Install launch agent for startup at login
+echo -e "${BLUE}Configuring startup at login...${NC}"
+mkdir -p "$LAUNCH_AGENTS_DIR"
+# Truncate old logs to prevent unbounded growth
+: > "$LOGS_DIR/indicator.log" 2>/dev/null || true
+: > "$LOGS_DIR/indicator.error.log" 2>/dev/null || true
+
+cat > "$LAUNCH_AGENT_PLIST" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.transcriptor.indicator</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$BIN_DIR/transcriptor-indicator</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>StandardOutPath</key>
+    <string>$LOGS_DIR/indicator.log</string>
+    <key>StandardErrorPath</key>
+    <string>$LOGS_DIR/indicator.error.log</string>
+</dict>
+</plist>
+EOF
+
+USER_ID="$(id -u)"
+launchctl bootout "gui/$USER_ID/com.transcriptor.indicator" 2>/dev/null || true
+launchctl bootstrap "gui/$USER_ID" "$LAUNCH_AGENT_PLIST" 2>/dev/null || true
+launchctl kickstart -k "gui/$USER_ID/com.transcriptor.indicator" 2>/dev/null || true
+
+echo -e "${GREEN}✓ Menu bar app configured to start at login${NC}"
 echo ""
 
 # Run doctor
@@ -176,4 +210,6 @@ echo -e "${GREEN}║    transcriptor start \"Meeting Name\"                     
 echo -e "${GREEN}║    transcriptor stop                                       ║${NC}"
 echo -e "${GREEN}║    transcriptor list                                       ║${NC}"
 echo -e "${GREEN}║    transcriptor --help                                     ║${NC}"
+echo -e "${GREEN}║                                                            ║${NC}"
+echo -e "${GREEN}║  Menu bar app auto-starts at login                         ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
