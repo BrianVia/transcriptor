@@ -20,7 +20,7 @@ class MicrophoneMonitor {
         let runningStatus: OSStatus
 
         var isActive: Bool {
-            isRunningSomewhere || isRunning
+            isRunningSomewhere
         }
     }
 

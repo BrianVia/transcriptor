@@ -10,6 +10,8 @@ let currentChunkNumber = 0;
 let currentOutputDir = "";
 let currentMeetingName = "";
 let isStopping = false;
+let stopWatcher: Timer | null = null;
+const pendingTranscriptions = new Map<string, Promise<void>>();
 
 function formatDate(date: Date): string {
   return date.toISOString().split("T")[0];
@@ -109,10 +111,11 @@ duration:
   process.on("SIGINT", () => stopRecording());
   process.on("SIGTERM", () => stopRecording());
 
-  const stopWatcher = setInterval(() => {
+  stopWatcher = setInterval(() => {
     if (existsSync(paths.stopSignal)) {
       unlinkSync(paths.stopSignal);
       clearInterval(stopWatcher);
+      stopWatcher = null;
       stopRecording();
     }
   }, 500);
@@ -166,7 +169,7 @@ async function startAudioProcess(): Promise<void> {
       const match = chunkPath.match(/chunk_(\d+)\.wav$/);
       const chunkNum = match ? parseInt(match[1]) : 0;
       if (chunkNum > 0 && existsSync(chunkPath)) {
-        transcribeChunkAsync(chunkPath, chunkNum);
+        queueTranscription(chunkPath, chunkNum);
       }
     }
   }, 500);
@@ -208,26 +211,53 @@ async function transcribeChunkAsync(chunkPath: string, chunkNumber: number): Pro
   }
 }
 
+function queueTranscription(chunkPath: string, chunkNumber: number): Promise<void> {
+  const existing = pendingTranscriptions.get(chunkPath);
+  if (existing) {
+    return existing;
+  }
+
+  const task = transcribeChunkAsync(chunkPath, chunkNumber)
+    .finally(() => {
+      pendingTranscriptions.delete(chunkPath);
+    });
+
+  pendingTranscriptions.set(chunkPath, task);
+  return task;
+}
+
+async function waitForPendingTranscriptions(): Promise<void> {
+  if (pendingTranscriptions.size === 0) {
+    return;
+  }
+
+  await Promise.allSettled(Array.from(pendingTranscriptions.values()));
+}
+
 export async function stopRecording(): Promise<void> {
   // Prevent multiple stop calls
   if (isStopping) return;
   isStopping = true;
 
   const state = loadState();
+  const hasLocalRecording = Boolean(currentOutputDir || audioPid || audioProcess);
 
-  if (!state.isRecording) {
+  if (!state.isRecording && !hasLocalRecording) {
     console.log("Not currently recording.");
+    isStopping = false;
     return;
   }
-
-  // Clear state immediately to prevent re-entry
-  clearState();
 
   console.log("\n⏹️  Stopping recording...");
 
   if (chunkInterval) {
     clearInterval(chunkInterval);
     chunkInterval = null;
+  }
+
+  if (stopWatcher) {
+    clearInterval(stopWatcher);
+    stopWatcher = null;
   }
 
   if (chunkWatcher) {
@@ -262,14 +292,15 @@ export async function stopRecording(): Promise<void> {
       const match = chunkPath.match(/chunk_(\d+)\.wav$/);
       const chunkNum = match ? parseInt(match[1]) : 0;
       if (chunkNum > 0 && existsSync(chunkPath)) {
-        await transcribeChunkAsync(chunkPath, chunkNum);
+        await queueTranscription(chunkPath, chunkNum);
       }
     }
   } else if (currentChunkNumber > 0) {
     // Fallback: transcribe by known chunk number
     const finalChunkPath = join(outputDir, "chunks", `chunk_${currentChunkNumber.toString().padStart(4, "0")}.wav`);
     if (existsSync(finalChunkPath) && !processedChunks.has(finalChunkPath)) {
-      await transcribeChunkAsync(finalChunkPath, currentChunkNumber);
+      processedChunks.add(finalChunkPath);
+      await queueTranscription(finalChunkPath, currentChunkNumber);
     }
   } else if (state.outputDir) {
     // Fallback for external stop: find last chunk on disk
@@ -280,10 +311,14 @@ export async function stopRecording(): Promise<void> {
       if (chunks.length > 0) {
         const lastChunk = chunks[chunks.length - 1];
         const chunkNum = parseInt(lastChunk.match(/chunk_(\d+)/)?.[1] ?? "0");
-        await transcribeChunkAsync(join(chunksDir, lastChunk), chunkNum);
+        const lastChunkPath = join(chunksDir, lastChunk);
+        processedChunks.add(lastChunkPath);
+        await queueTranscription(lastChunkPath, chunkNum);
       }
     }
   }
+
+  await waitForPendingTranscriptions();
 
   // Finalize transcript - update frontmatter with end time and duration
   const transcriptPath = join(outputDir, "transcript.md");
@@ -302,6 +337,8 @@ export async function stopRecording(): Promise<void> {
   }
 
   await mergeAudioChunks(outputDir);
+
+  clearState();
 
   console.log(`\n✅ Recording saved to ${outputDir}`);
   console.log(`   📝 Transcript: ${transcriptPath}`);
