@@ -643,7 +643,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Show microphone status if monitoring is enabled
         let config = ConfigManager.shared.loadConfig()
         if config.microphoneDetectionEnabled {
-            let micStatus = MicrophoneMonitor.shared.isMicrophoneInUse ? "🎤 Mic Active" : "🎤 Listening..."
+            let micStatus = MicrophoneMonitor.shared.isMicrophoneInUse ? "🎤 Mic In Use" : "🎤 Mic Detection Ready"
             let micStatusItem = NSMenuItem(title: micStatus, action: nil, keyEquivalent: "")
             micStatusItem.isEnabled = false
             menu.addItem(micStatusItem)
