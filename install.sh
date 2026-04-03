@@ -84,6 +84,8 @@ cat > "$AUDIO_APP/Contents/Info.plist" << 'PLIST'
     <string>APPL</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Transcriptor needs microphone access to capture your side of the conversation for transcription.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Transcriptor needs screen recording permission to capture system audio for transcription.</string>
 </dict>

@@ -26,6 +26,8 @@ export async function transcribeChunk(audioPath: string): Promise<string> {
     "-f", audioPath,
     "--no-timestamps",
     "--no-prints",
+    "--suppress-nst",
+    "--no-speech-thold", "0.8",
     "-l", "en",
     "--threads", "4",
   ], {

@@ -132,7 +132,7 @@ async function startAudioProcess(): Promise<void> {
 
   // Launch via `open -a` so macOS properly registers the app with Launch Services / TCC.
   // This is what makes screen recording permission persist across sessions.
-  audioProcess = spawn(["open", "-a", paths.audioApp, "--args", "--chunk-prefix", chunkPrefix], {
+  audioProcess = spawn(["open", "-a", paths.audioApp, "--args", "--chunk-prefix", chunkPrefix, "--mic"], {
     stdout: "ignore",
     stderr: "ignore",
   });
