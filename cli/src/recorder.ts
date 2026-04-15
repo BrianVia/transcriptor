@@ -3,6 +3,7 @@ import { join } from "path";
 import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync, appendFileSync, readFileSync } from "fs";
 import { paths, loadConfig, loadState, saveState, clearState } from "./config";
 import { transcribeChunk } from "./transcriber";
+import { formatDate, slugify, stripDatePrefix, formatTimestamp, formatTimeShort } from "./utils";
 
 let audioProcess: Subprocess | null = null;
 let chunkInterval: Timer | null = null;
@@ -12,36 +13,6 @@ let currentMeetingName = "";
 let isStopping = false;
 let stopWatcher: Timer | null = null;
 const pendingTranscriptions = new Map<string, Promise<void>>();
-
-function formatDate(date: Date): string {
-  return date.toISOString().split("T")[0];
-}
-
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-}
-
-function formatTimestamp(seconds: number): string {
-  const hours = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
-
-  if (hours > 0) {
-    return `${hours}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
-  }
-  return `${mins}:${secs.toString().padStart(2, "0")}`;
-}
-
-function formatTimeShort(date: Date): string {
-  return date.toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true
-  });
-}
 
 export async function startRecording(meetingName: string): Promise<void> {
   const state = loadState();
@@ -59,7 +30,7 @@ export async function startRecording(meetingName: string): Promise<void> {
 
   const config = loadConfig();
   const now = new Date();
-  const slug = slugify(meetingName);
+  const slug = slugify(stripDatePrefix(meetingName)) || "recording";
   const dirName = `${formatDate(now)}_${slug}`;
 
   currentOutputDir = join(paths.transcripts, dirName);

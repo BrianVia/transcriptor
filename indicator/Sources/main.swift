@@ -275,7 +275,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if config.autoStartRecording {
             autoStartedRecording = true
             // Auto-start recording without dialog
-            startRecording(name: meeting.title)
+            startRecording(name: defaultMeetingName(calendarTitle: meeting.title, date: meeting.startDate))
         } else {
             autoStartedRecording = false
             // Show confirmation dialog
@@ -317,7 +317,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let alert = NSAlert()
         alert.messageText = "Meeting Starting"
-        alert.informativeText = "Start recording \"\(meeting.title)\"?"
+        let meetingName = defaultMeetingName(calendarTitle: meeting.title, date: meeting.startDate)
+        alert.informativeText = "Start recording \"\(meetingName)\"?"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Start Recording")
         alert.addButton(withTitle: "Skip")
@@ -326,7 +327,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         if response == .alertFirstButtonReturn {
             autoStartedRecording = false
-            startRecording(name: meeting.title)
+            startRecording(name: meetingName)
         }
     }
 
@@ -460,7 +461,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         if let frontmostBundleID, slackBundleIDs.contains(frontmostBundleID) {
-            let recordingName = nearbyMeeting?.title ?? "Slack Huddle \(formatDate(Date()))"
+            let recordingName = defaultMeetingName(
+                calendarTitle: nearbyMeeting?.title,
+                fallbackTitle: "Slack Huddle",
+                date: nearbyMeeting?.startDate ?? Date()
+            )
             return MeetingAppContext(
                 appName: "Slack",
                 recordingName: recordingName,
@@ -469,7 +474,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         if hasNearbyMeeting && !runningBundleIDs.isDisjoint(with: slackBundleIDs) {
-            let recordingName = nearbyMeeting?.title ?? "Slack Huddle \(formatDate(Date()))"
+            let recordingName = defaultMeetingName(
+                calendarTitle: nearbyMeeting?.title,
+                fallbackTitle: "Slack Huddle",
+                date: nearbyMeeting?.startDate ?? Date()
+            )
             return MeetingAppContext(
                 appName: "Slack",
                 recordingName: recordingName,
@@ -479,7 +488,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         if let frontmostBundleID,
            let frontmostMeetingApp = knownMeetingApps.first(where: { $0.bundleID == frontmostBundleID }) {
-            let recordingName = nearbyMeeting?.title ?? "\(frontmostMeetingApp.appName) Call \(formatDate(Date()))"
+            let recordingName = defaultMeetingName(
+                calendarTitle: nearbyMeeting?.title,
+                fallbackTitle: "\(frontmostMeetingApp.appName) Call",
+                date: nearbyMeeting?.startDate ?? Date()
+            )
             return MeetingAppContext(
                 appName: frontmostMeetingApp.appName,
                 recordingName: recordingName,
@@ -490,7 +503,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if hasNearbyMeeting {
             for meetingApp in knownMeetingApps where !slackBundleIDs.contains(meetingApp.bundleID) {
                 if runningBundleIDs.contains(meetingApp.bundleID) {
-                    let recordingName = nearbyMeeting?.title ?? "\(meetingApp.appName) Call \(formatDate(Date()))"
+                    let recordingName = defaultMeetingName(
+                        calendarTitle: nearbyMeeting?.title,
+                        fallbackTitle: "\(meetingApp.appName) Call",
+                        date: nearbyMeeting?.startDate ?? Date()
+                    )
                     return MeetingAppContext(
                         appName: meetingApp.appName,
                         recordingName: recordingName,
@@ -505,7 +522,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
            let googleMeetMeeting = nearbyGoogleMeetMeeting {
             return MeetingAppContext(
                 appName: "Google Meet",
-                recordingName: googleMeetMeeting.title,
+                recordingName: defaultMeetingName(calendarTitle: googleMeetMeeting.title, date: googleMeetMeeting.startDate),
                 reason: "google-meet-frontmost-browser"
             )
         }
@@ -515,7 +532,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
            hasNearbyMeeting {
             return MeetingAppContext(
                 appName: "Google Meet",
-                recordingName: googleMeetMeeting.title,
+                recordingName: defaultMeetingName(calendarTitle: googleMeetMeeting.title, date: googleMeetMeeting.startDate),
                 reason: "google-meet-near-calendar-meeting-browser-running"
             )
         }
@@ -526,7 +543,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
            browserBundleIDs.contains(frontmostBundleID) {
             return MeetingAppContext(
                 appName: "Calendar Meeting",
-                recordingName: nearbyMeeting.title,
+                recordingName: defaultMeetingName(calendarTitle: nearbyMeeting.title, date: nearbyMeeting.startDate),
                 reason: "nearby-video-calendar-meeting-frontmost-browser"
             )
         }
@@ -920,7 +937,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let inputField = NSTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
         inputField.placeholderString = "Meeting Name"
-        inputField.stringValue = "Meeting \(formatDate(Date()))"
+        inputField.stringValue = defaultMeetingName(calendarTitle: bestDefaultCalendarTitle(), date: bestDefaultMeetingDate())
         alert.accessoryView = inputField
 
         // Bring app to front
@@ -940,6 +957,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let formatter = DateFormatter()
         formatter.dateFormat = "h:mm a"
         return formatter.string(from: date)
+    }
+
+    func formatISODate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    func defaultMeetingName(calendarTitle: String?, fallbackTitle: String = "Meeting", date: Date = Date()) -> String {
+        let title = calendarTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTitle = title?.isEmpty == false ? title! : fallbackTitle
+        return "\(formatISODate(date)) - \(resolvedTitle)"
+    }
+
+    func bestDefaultCalendarTitle() -> String? {
+        let config = ConfigManager.shared.loadConfig()
+        guard config.calendarEnabled else { return nil }
+        return nearestCalendarMeeting(config: config)?.title ?? cachedNextMeeting?.title
+    }
+
+    func bestDefaultMeetingDate() -> Date {
+        let config = ConfigManager.shared.loadConfig()
+        guard config.calendarEnabled else { return Date() }
+        return nearestCalendarMeeting(config: config)?.startDate ?? cachedNextMeeting?.startDate ?? Date()
     }
 
     func formatRelativeTime(_ date: Date) -> String {

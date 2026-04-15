@@ -5,6 +5,9 @@ import { checkWhisperInstalled } from "./transcriber";
 import { loadConfig, saveConfig, paths, ensureDirectories, type Config } from "./config";
 import { existsSync, readdirSync, statSync, unlinkSync, rmSync, readFileSync } from "fs";
 import { join } from "path";
+import { handleTranscribe } from "./transcribe";
+import { handleWatch } from "./watcher";
+import { formatDate } from "./utils";
 
 const VERSION = "1.0.0";
 
@@ -16,9 +19,11 @@ USAGE:
   transcriptor <command> [options]
 
 COMMANDS:
-  start <name>     Start recording a meeting with the given name
+  start [name]     Start recording a meeting with the given name
   stop             Stop the current recording
   status           Check if recording is in progress
+  transcribe <url|file>  Transcribe a YouTube video or audio file
+  watch            Watch ~/transcripts/inbox/ for files to transcribe
   list             List all transcripts
   open <name>      Open a transcript in your default editor
   config           Show current configuration
@@ -45,13 +50,7 @@ CONFIGURATION:
 }
 
 async function handleStart(args: string[]): Promise<void> {
-  if (args.length === 0) {
-    console.error("Error: Meeting name required");
-    console.error("Usage: transcriptor start <name>");
-    process.exit(1);
-  }
-
-  const meetingName = args.join(" ");
+  const meetingName = args.length === 0 ? `${formatDate(new Date())} - Meeting` : args.join(" ");
   await startRecording(meetingName);
   
   // Keep process running
@@ -218,6 +217,15 @@ async function handleDoctor(): Promise<void> {
   } catch {}
   checks.push({ name: "ffmpeg", ok: ffmpegOk, path: "system" });
 
+  // Check yt-dlp (optional, for YouTube transcription)
+  let ytDlpOk = false;
+  try {
+    const proc = Bun.spawn(["which", "yt-dlp"], { stdout: "pipe" });
+    const output = await new Response(proc.stdout).text();
+    ytDlpOk = output.trim().length > 0;
+  } catch {}
+  checks.push({ name: "yt-dlp (optional, for YouTube)", ok: ytDlpOk, path: "system" });
+
   // Print results
   let allOk = true;
   for (const check of checks) {
@@ -313,6 +321,12 @@ switch (command) {
     break;
   case "config":
     handleConfig(commandArgs);
+    break;
+  case "transcribe":
+    await handleTranscribe(commandArgs);
+    break;
+  case "watch":
+    await handleWatch();
     break;
   case "doctor":
     await handleDoctor();

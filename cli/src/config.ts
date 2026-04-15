@@ -48,6 +48,7 @@ export const paths = {
   completedChunksFile: join(TRANSCRIPTOR_DIR, "completed-chunks"),
   indicatorBin: join(BIN_DIR, "transcriptor-indicator"),
   stopSignal: join(TRANSCRIPTOR_DIR, "stop-signal"),
+  inbox: join(TRANSCRIPTS_DIR, "inbox"),
 };
 
 const defaultConfig: Config = {
